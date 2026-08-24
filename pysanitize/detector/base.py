@@ -15,18 +15,18 @@ if TYPE_CHECKING:
 class Detection:
     """A located sensitive field in the document text.
 
-    ``start``/``end`` are global char offsets into ``ParsedDocument.text``; the
-    masker replaces that span, the M2 renderer maps it back to a page/box.
+    ``start``/``end`` are global char offsets into ``ParsedDocument.text`` that
+    the masker replaces.
     """
 
-    field_type: str  # person_name / company_name / phone / ...
+    field_type: str
     value: str  # the sensitive text exactly as it appears in the document
     start: int
     end: int
-    page: int  # 1-based page, derived from the containing block
-    source: str = "rules"  # "rules" | "llm"
+    page: int  # 1-based, from the containing block
+    source: str = "rules"
     confidence: float = 1.0
-    bbox: BBox | None = None  # geometry for the M2 renderer
+    bbox: BBox | None = None
     masked_value: str = ""  # filled by the masker for the audit report
 
 

@@ -1,4 +1,0 @@
-openai:
-  api_key: ${DEEPSEEK_API_KEY}
-  api_base: https://api.deepseek.com
-  model_name: deepseek-v4-flash

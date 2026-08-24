@@ -71,7 +71,3 @@ class YOLODetector(ImageDetector):
                     DetectedObject(x0, y0, x1, y1, label=label, confidence=float(row.conf))
                 )
         return boxes
-
-
-# Backward-compatible alias: M1 shipped "YOLOFaceDetector".
-YOLOFaceDetector = YOLODetector

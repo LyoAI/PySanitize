@@ -70,9 +70,6 @@ class LLM:
             messages, tools=tools, model=kwargs.pop("model", self.model), **kwargs
         )
 
-    def get_default_model(self) -> str:
-        return self.model
-
 
 def get_llm(model_name: str, provider_type: str = "openai") -> LLM:
     """Build the LLM facade for ``model_name`` from ``config/llm/<model_name>.yaml``."""

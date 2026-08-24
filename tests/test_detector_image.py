@@ -160,11 +160,3 @@ def test_ocr_text_detector_missing_dependency_raises_clear_error():
         from pysanitize.detector.image.ocr import OCRTextDetector
 
         OCRTextDetector()
-
-
-def test_detected_object_backward_alias():
-    from pysanitize.detector.image.base import FaceBox
-
-    assert FaceBox is DetectedObject
-    b = FaceBox(0, 0, 10, 10)
-    assert b.label == "face"

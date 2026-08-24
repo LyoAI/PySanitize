@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pysanitize.utils import get_logger
 
-from .base import DetectedObject, FaceBox, ImageDetector
+from .base import DetectedObject, ImageDetector
 from .opencv import build_face_detector
 
 logger = get_logger()
@@ -92,7 +92,6 @@ def _build_yolo(model_path, classes: list[str], confidence: float) -> ImageDetec
 
 __all__ = [
     "DetectedObject",
-    "FaceBox",
     "ImageDetector",
     "build_detectors",
     "build_face_detector",

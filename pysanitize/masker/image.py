@@ -15,8 +15,6 @@ from PIL import Image
 from pysanitize.detector.image.base import DetectedObject
 from pysanitize.utils import get_logger
 
-from .base import Masker
-
 logger = get_logger()
 
 
@@ -36,7 +34,7 @@ def mosaic(img: Image.Image, boxes: list[DetectedObject], factor: int = 16) -> I
     return out
 
 
-class ImageMasker(Masker):
+class ImageMasker:
     """Mosaics detected regions onto an image and saves the masked copy."""
 
     def __init__(self, factor: int = 16):

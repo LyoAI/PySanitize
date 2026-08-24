@@ -15,6 +15,17 @@ def _by_type(doc, **kw):
     return {d.field_type: d for d in detections}
 
 
+def test_load_field_specs_falls_back_to_builtin_defaults():
+    # a fresh clone / CI has no config/fields.yaml → built-in defaults apply
+    specs = load_field_specs("/nonexistent/fields.yaml")
+    assert set(specs) >= {
+        "phone", "id_card", "email", "credit_code",
+        "stock_code", "person_name", "company_name",
+    }
+    assert specs["phone"].mask.mask("13812345678") == "138****5678"
+    assert specs["id_card"].compiled is not None  # regex compiled from the default
+
+
 def test_phone(make_doc):
     doc = make_doc([("paragraph", "联系电话 13812345678 谢谢", 1)])
     d = _by_type(doc)["phone"]

@@ -8,6 +8,7 @@ CLI only when the user actually passed a flag) override it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -16,7 +17,12 @@ from pathlib import Path
 from pysanitize.config import MINERU_BACKEND, OUT_DIR, load_pipeline_config
 from pysanitize.detector.base import Detection
 from pysanitize.detector.image import DetectedObject, build_detectors
-from pysanitize.detector.llm import LLMDetector
+from pysanitize.detector.llm import (
+    CHUNK_SIZE,
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    LLMDetector,
+)
 from pysanitize.detector.registry import DetectionRegistry
 from pysanitize.detector.rules import RuleDetector
 from pysanitize.detector.specs import MaskSpec, load_field_specs, select_specs
@@ -30,6 +36,11 @@ from pysanitize.utils import get_logger
 logger = get_logger()
 
 DETECTOR_MODES = ("rules", "llm", "hybrid")
+
+# Block types whose only content is an embedded image — rendered as markdown
+# images. Everything else (tables, paragraphs, ...) renders as masked text even
+# when MinerU also stored an ``image_source`` for it.
+IMAGE_TYPES = frozenset({"image", "chart"})
 
 
 @dataclass
@@ -97,12 +108,15 @@ def sanitize_document(
     detector = detector or text_cfg.get("detector", "rules")
     if detector not in DETECTOR_MODES:
         raise ValueError(f"detector must be one of {DETECTOR_MODES}, got {detector!r}")
-    llm_model = llm_model or text_cfg.get("model") or LLMDetector.DEFAULT_MODEL
+    llm_model = llm_model or text_cfg.get("model") or DEFAULT_MODEL
     llm_provider = (
         llm_provider
         or text_cfg.get("provider")
-        or LLMDetector.DEFAULT_PROVIDER
+        or DEFAULT_PROVIDER
     )
+    chunking_cfg = text_cfg.get("chunking", {})
+    chunk_size = int(chunking_cfg.get("chunk_size", CHUNK_SIZE))
+    title_level_limit = chunking_cfg.get("title_level_limit", "auto")
     verify_checksums = (
         text_cfg.get("verify_checksums", True)
         if verify_checksums is None
@@ -150,32 +164,38 @@ def sanitize_document(
     if detector in ("rules", "hybrid"):
         registry.add(RuleDetector(specs=specs, verify_checksums=verify_checksums))
     if detector in ("llm", "hybrid"):
-        registry.add(LLMDetector(model=llm_model, provider=llm_provider, fields=fields))
+        registry.add(
+            LLMDetector(
+                model=llm_model,
+                provider=llm_provider,
+                fields=fields,
+                chunk_size=chunk_size,
+                title_level_limit=title_level_limit,
+            )
+        )
     detections = registry.detect(doc)
 
     mask_map = {name: spec.mask for name, spec in specs.items()}
     masked_text = TextMasker(mask_map).mask(doc.text, detections)
 
-    # ---- images: face-detect + mosaic ----------------------------------------
+    # ---- images: copy under images_masked/ (mosaic on request) ----------------
     out_dir = Path(out_dir) if out_dir else (OUT_DIR / doc.doc_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    masked_image_names: dict[str, Path] = {}
-    masked_images: list[Path] = []
-    if mask_images:
-        masked_images, masked_image_names = _mask_images(
-            doc,
-            out_dir,
-            classes=image_classes,
-            backend=image_backend,
-            model_path=image_model_path,
-            score_threshold=score_threshold,
-            factor=mosaic_factor,
-        )
+    masked_images, image_names = _prepare_images(
+        doc,
+        out_dir,
+        mask=mask_images,
+        classes=image_classes,
+        backend=image_backend,
+        model_path=image_model_path,
+        score_threshold=score_threshold,
+        factor=mosaic_factor,
+    )
 
     sanitized_md = out_dir / "sanitized.md"
     sanitized_md.write_text(
-        _build_markdown(doc, detections, mask_map, masked_image_names, out_dir),
+        _build_markdown(doc, detections, mask_map, image_names, out_dir),
         encoding="utf-8",
     )
 
@@ -220,42 +240,50 @@ def sanitize_document(
     )
 
 
-def _mask_images(
+def _prepare_images(
     doc,
     out_dir: Path,
     *,
+    mask: bool,
     classes: list[str],
     backend: str,
     model_path: Path | None,
     score_threshold: float,
     factor: int,
 ) -> tuple[list[Path], dict[str, Path]]:
-    """Detect the requested classes in every extracted image and mosaic them.
+    """Copy every extracted image under ``out_dir/images_masked/``, mosaicing on request.
 
-    ``classes`` is the list of targets (``face`` / ``text`` / YOLO names); an
-    empty list means the user opted out — no image masking happens, not even a
-    plain copy, so ``sanitized.md`` keeps pointing at MinerU's originals.
+    Mirrors MinerU's layout (an ``images*`` dir next to the markdown), so
+    ``sanitized.md`` references ``images_masked/<name>`` directly and stays
+    self-contained. With ``mask`` the requested classes are detected and
+    mosaiced into the copy; otherwise (or with no targets / no detectors) the
+    original is copied as-is.
 
     Returns ``(masked_paths, name_map)`` where ``name_map`` maps the original
-    image filename to its copy under ``out_dir/images_masked/`` — the markdown
-    rewriter points every image link there so sanitized.md stays self-contained.
+    image filename to its copy under ``out_dir/images_masked/``.
     """
     if not doc.images:
         return [], {}
-    if not classes:
-        logger.warning(
-            "Image masking is enabled but no targets were given (image.classes / --image-classes), "
-            "skipping image processing"
-        )
-        return [], {}
-    detectors = build_detectors(
-        classes, backend=backend, model_path=model_path, score_threshold=score_threshold
-    )
-    if not detectors:
-        logger.warning("No image detectors available, skipping image masking")
-        return [], {}
     dst_dir = out_dir / "images_masked"
     dst_dir.mkdir(parents=True, exist_ok=True)
+    detectors: list = []
+    if mask:
+        if not classes:
+            logger.warning(
+                "Image masking is enabled but no targets were given "
+                "(image.classes / --image-classes); copying originals as-is"
+            )
+        else:
+            detectors = build_detectors(
+                classes,
+                backend=backend,
+                model_path=model_path,
+                score_threshold=score_threshold,
+            )
+            if not detectors:
+                logger.warning(
+                    "No image detectors available; copying originals as-is"
+                )
     masked: list[Path] = []
     name_map: dict[str, Path] = {}
     masker = ImageMasker(factor=factor)
@@ -293,9 +321,11 @@ def _build_markdown(
     Text blocks are masked with *block-relative* offsets: fixed-length masks
     (e.g. ``****``) change the total string length, so offsets into a globally
     masked text drift as you move past an earlier span. Masking each block's
-    own text keeps every offset exact. Image blocks become markdown references
-    to ``images_masked/`` copies (when available) so the output is
-    self-contained; captions are still masked.
+    own text keeps every offset exact. Titles become ``#``-level headings and
+    image-bearing blocks (image/chart) become ``images_masked/`` references —
+    every extracted image has a local copy there (mosaiced or original);
+    image blocks whose extracted file is missing are skipped, never linked to a
+    path that doesn't exist.
     """
     from pysanitize.masker.text import mask_text
 
@@ -317,18 +347,17 @@ def _build_markdown(
             if block.char_start <= d.start and d.end <= block.char_end
         ]
         seg = mask_text(block.text, block_dets, mask_map)
-        if block.type == "image":
-            dst = image_names.get(block.image_path.name) if block.image_path else None
-            if dst is not None:
-                rel = dst.relative_to(out_dir)
-                caption = seg.strip()
-                link = (
-                    f"![{caption}]({rel.as_posix()})"
-                    if caption
-                    else f"![]({rel.as_posix()})"
-                )
-                parts.append(link)
-                continue
+        if block.type == "title" and block.level:
+            seg = f"{'#' * block.level} {seg}"
+        if block.image_path is not None and (block.type in IMAGE_TYPES or not seg.strip()):
+            target = image_names.get(block.image_path.name)
+            if target is None:
+                continue  # no local copy for this image — nothing to reference
+            rel = Path(os.path.relpath(target, out_dir)).as_posix()
+            caption = seg.strip()
+            link = f"![{caption}]({rel})" if caption else f"![]({rel})"
+            parts.append(link)
+            continue
         if seg.strip():
             parts.append(seg)
     return "\n\n".join(parts)

@@ -63,10 +63,67 @@ class FieldSpec:
                 self.compiled = None
 
 
-def load_field_specs(path: Path | str = FIELDS_CONFIG) -> dict[str, FieldSpec]:
-    """Load field specs from a YAML file (see ``config/fields.yaml``)."""
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+# Built-in field specs used when ``config/fields.yaml`` is absent (fresh clone /
+# CI has no ``config/``). Mirrors the shipped fields.yaml so a machine without a
+# local config behaves identically to one that has it.
+DEFAULT_FIELD_SPECS: dict[str, dict[str, Any]] = {
+    "phone": {
+        "label": "phone number",
+        "pattern": r"(?<!\d)1[3-9]\d{9}(?!\d)",
+        "confidence": 1.0,
+        "mask": {"keep_head": 3, "keep_tail": 4, "mask_char": "*"},
+    },
+    "id_card": {
+        "label": "national ID number",
+        "pattern": r"(?<![0-9A-Za-z])[1-9]\d{16}[\dXx](?![0-9A-Za-z])",
+        "heuristic": "checksum_id",
+        "confidence": 1.0,
+        "mask": {"keep_head": 6, "keep_tail": 4, "mask_char": "*"},
+    },
+    "email": {
+        "label": "email address",
+        "pattern": r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![A-Za-z0-9])",
+        "confidence": 1.0,
+        "mask": {"template": "****@***"},
+    },
+    "credit_code": {
+        "label": "unified social credit code",
+        "pattern": r"(?<![0-9A-Za-z])[0-9A-HJ-NPQRTUWXY]{18}(?![0-9A-Za-z])",
+        "heuristic": "checksum_uscc",
+        "confidence": 1.0,
+        "mask": {"keep_head": 0, "keep_tail": 4, "mask_char": "*"},
+    },
+    "stock_code": {
+        "label": "stock code",
+        "pattern": r"(?<!\d)(?:60\d{4}|68\d{4}|00\d{4}|30\d{4})(?!\d)",
+        "confidence": 0.8,
+        "mask": {"template": "******"},
+    },
+    "bank_account": {
+        "label": "bank account number",
+        "pattern": r"(?<!\d)\d{16,19}(?!\d)",
+        "confidence": 0.5,
+        "enabled": False,
+        "mask": {"keep_head": 4, "keep_tail": 4, "mask_char": "*"},
+    },
+    "person_name": {
+        "label": "person name",
+        "pattern": "",
+        "heuristic": "surname_context",
+        "confidence": 0.9,
+        "mask": {"template": "***"},
+    },
+    "company_name": {
+        "label": "company name",
+        "pattern": "",
+        "heuristic": "company_suffix",
+        "confidence": 0.9,
+        "mask": {"template": "****"},
+    },
+}
+
+
+def _build_specs(data: dict[str, Any]) -> dict[str, FieldSpec]:
     specs: dict[str, FieldSpec] = {}
     for name, raw in data.items():
         if not isinstance(raw, dict):
@@ -85,6 +142,19 @@ def load_field_specs(path: Path | str = FIELDS_CONFIG) -> dict[str, FieldSpec]:
             enabled=bool(raw.get("enabled", True)),
             heuristic=raw.get("heuristic", ""),
         )
+    return specs
+
+
+def load_field_specs(path: Path | str = FIELDS_CONFIG) -> dict[str, FieldSpec]:
+    """Load field specs from ``config/fields.yaml``, falling back to the
+    built-in :data:`DEFAULT_FIELD_SPECS` when the file is absent."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        data = DEFAULT_FIELD_SPECS
+        path = "<built-in defaults>"
+    specs = _build_specs(data)
     logger.debug("loaded %d field specs from %s", len(specs), path)
     return specs
 

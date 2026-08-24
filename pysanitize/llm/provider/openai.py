@@ -135,6 +135,3 @@ class OpenAICompatProvider(LLMProvider):
         except Exception as e:
             logger.error("Error invoking LLM: %s", e)
             return LLMResponse(content=None, finish_reason="error", error=str(e))
-
-    def get_default_model(self) -> str:
-        return self.default_model

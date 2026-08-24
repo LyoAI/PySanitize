@@ -49,7 +49,19 @@ Requires Python ≥ 3.12; [uv](https://docs.astral.sh/uv/) recommended:
 ```bash
 git clone https://github.com/LyoAI/PySanitize.git && cd PySanitize
 uv sync                    # all deps (incl. mineru[pipeline], large)
-cp .env.example .env       # add the LLM key you plan to use (llm/hybrid mode only)
+```
+
+`config/` and `.env` are **git-ignored and optional** — the tool ships built-in defaults (field specs, pipeline switches), so a fresh clone and CI work out of the box. To customize or add real keys, create them locally:
+
+- `config/fields.yaml`, `config/pipeline.yaml`, `config/llm/<model>.yaml` — override the built-in defaults (see the config sections below; the default field specs live in `pysanitize/detector/specs.py`).
+- `.env` — API keys referenced by `config/llm/*.yaml` `${VAR}` placeholders:
+
+```
+DEEPSEEK_API_KEY=...      # deepseek-v4-flash (default model)
+DASHSCOPE_API_KEY=...     # qwen3-max / qwen3.6-27b
+MINERU_BACKEND=pipeline   # pipeline (CPU) | vlm-engine / hybrid-engine (GPU)
+MODELS_DIR=~/Models       # downloaded local models (YuNet ONNX, ...)
+LLM_TIMEOUT_S=180         # per-call LLM request timeout (seconds)
 ```
 
 Optional features, unlock on demand:
@@ -85,7 +97,7 @@ Each run produces a job directory (default `output/<doc-name>/`):
 ```
 output/<doc-name>/
 ├── sanitized.md            # sanitized Markdown (image links point into images_masked/)
-├── images_masked/          # masked (or untouched) image copies
+├── images_masked/          # every extracted image — masked copies, or originals when masking is off
 └── audit.json              # public summary: hit counts + masked text, no raw values
 ```
 
@@ -119,6 +131,8 @@ print(result.detections)       # each with field_type / start / end / masked_val
 | `hybrid` | runs both; rules win on overlap |
 
 The LLM only locates, never rewrites, with a **hallucination hard gate**: a value that doesn't re-match the source is dropped (rather miss than be wrong); `temperature=0` + `response_format=json_object`.
+
+Chunking is block-aware and adapts to each document's heading structure: `text.chunking.title_level_limit` (`auto` by default, or a fixed level, 0 = top) picks which title level opens a new LLM call, so major chapters split calls while minor headings accumulate; tables always stand alone and every chunk is an exact slice of the document text. `text.chunking.chunk_size` sets the target chars per call.
 
 ## 📋 Default sensitive fields (`config/fields.yaml`)
 
@@ -189,7 +203,7 @@ pysanitize/
 ├── cli.py      argparse CLI
 ├── llm/        LLM facade (openai / pingan providers)
 └── report.py   audit.json / sensitive_report.json
-config/         fields.yaml (field specs) / pipeline.yaml (stage switches) / llm/*.yaml (model config)
+config/         local overrides (git-ignored, optional): fields.yaml (field specs) / pipeline.yaml (stage switches) / llm/*.yaml (model config); built-in defaults apply without it
 ```
 
 Extension points: **add a field** → edit `fields.yaml`; **add a detector** → write a class into the registry; **add an image target** → write a class into the `build_detectors` route; **add an output format** → add a renderer in M2. Every interface has a single method; nothing touches the core.

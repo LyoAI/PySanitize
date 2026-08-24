@@ -1,4 +1,0 @@
-openai:
-  api_key: ${DASHSCOPE_API_KEY}
-  api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
-  model_name: qwen3.6-27b

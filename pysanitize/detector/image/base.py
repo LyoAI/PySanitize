@@ -43,10 +43,6 @@ class DetectedObject:
         return DetectedObject(x0, y0, x1, y1, self.label, self.confidence)
 
 
-# Backward-compatible alias: M1 shipped "FaceBox"; keep it importable.
-FaceBox = DetectedObject
-
-
 class ImageDetector(ABC):
     """Detects sensitive regions inside an image file."""
 

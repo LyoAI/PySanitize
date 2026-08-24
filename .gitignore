@@ -11,10 +11,9 @@ wheels/
 venv/
 env/
 
-# --- 本地密钥（复制 .env.example 为 .env 填入真实 key，绝不提交 .env）---
+# --- 本地密钥（真实 key 放在 .env，绝不提交）---
 .env
 .env.*
-!.env.example
 
 # --- 运行输出与缓存 ---
 output/
@@ -37,3 +36,6 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+
+upload_materials/
+config/

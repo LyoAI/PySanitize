@@ -11,8 +11,6 @@ from __future__ import annotations
 from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec, load_field_specs
 
-from .base import Masker
-
 
 def mask_text(
     text: str, detections: list[Detection], specs: dict[str, MaskSpec]
@@ -43,7 +41,7 @@ def mask_text(
     return "".join(parts)
 
 
-class TextMasker(Masker):
+class TextMasker:
     """Holds the field→mask map and masks full document text."""
 
     def __init__(self, specs: dict[str, MaskSpec] | None = None):

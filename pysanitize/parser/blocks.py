@@ -10,8 +10,7 @@ from pathlib import Path
 class BBox:
     """Axis-aligned bounding box in page-pixel coordinates.
 
-    For PDF/image documents MinerU records pixel geometry in ``middle.json``;
-    office (docx/xlsx/pptx) parses carry no geometry (``None``). Coordinates
+    Office (docx/xlsx/pptx) parses carry no geometry (``None``). Coordinates
     are normalized on construction (x0<=x1, y0<=y1).
     """
 
@@ -49,7 +48,7 @@ class Block:
 
     ``char_start/char_end`` slice into ``ParsedDocument.text`` and are the
     currency of M1 masking. Geometry (``bbox`` / ``line_boxes`` / ``image_bbox``)
-    comes lazily from ``middle.json`` and is consumed by the M2 renderer.
+    is carried for the M2 renderer.
     """
 
     block_id: str

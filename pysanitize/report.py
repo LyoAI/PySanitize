@@ -1,29 +1,18 @@
 """Audit artifacts for one sanitize run.
 
-Two files with different privacy postures:
-
-- ``audit.json`` — always written. A public summary: per-field counts and the
-  *masked* spans only. It never contains raw sensitive values, so it is safe
-  to share alongside the desensitized document.
-- ``sensitive_report.json`` — opt-in (``--audit``). Full findings with raw
-  values and char offsets for local review. Do not ship this file.
-
-Mirrors pdf-desensitizer's privacy-first defaults: raw-data audit is opt-in.
+``audit.json`` is always written — a public, raw-free summary (masked spans
+only). ``sensitive_report.json`` is opt-in (``--audit``) and carries raw values
++ offsets for local review — never ship it.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from pysanitize import __version__
 from pysanitize.detector.base import Detection
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _count_by_field(detections: list[Detection]) -> dict[str, int]:
@@ -38,8 +27,8 @@ class AuditInfo:
     """Everything the reporters need about one sanitize run."""
 
     doc_id: str
-    source: str  # basename of the input file
-    detector: str  # rules | llm | hybrid
+    source: str
+    detector: str
     fields: list[str]
     pages: int
     blocks: int

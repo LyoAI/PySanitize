@@ -46,7 +46,19 @@
 ```bash
 git clone https://github.com/LyoAI/PySanitize.git && cd PySanitize
 uv sync                    # 安装全部依赖（含 mineru[pipeline]，体积较大）
-cp .env.example .env       # 填上你要用的 LLM key（仅 llm / hybrid 模式需要）
+```
+
+`config/` 与 `.env` **被 git 忽略且非必需**——工具内置默认配置（字段规格、阶段开关），全新 clone 与 CI 开箱即用。要自定义或放入真实 key，在本地创建：
+
+- `config/fields.yaml`、`config/pipeline.yaml`、`config/llm/<model>.yaml` —— 覆盖内置默认值（默认字段规格见 `pysanitize/detector/specs.py`）
+- `.env` —— `config/llm/*.yaml` 里 `${VAR}` 占位符对应的 API key：
+
+```
+DEEPSEEK_API_KEY=...      # deepseek-v4-flash（默认模型）
+DASHSCOPE_API_KEY=...     # qwen3-max / qwen3.6-27b
+MINERU_BACKEND=pipeline   # pipeline（CPU）| vlm-engine / hybrid-engine（GPU）
+MODELS_DIR=~/Models       # 本地模型下载目录（YuNet ONNX 等）
+LLM_TIMEOUT_S=180         # 单次 LLM 请求超时（秒）
 ```
 
 可选特性按需解锁：
@@ -82,7 +94,7 @@ uv run pysanitize sanitize 样例.xlsx --fields person_name,phone --audit
 ```
 output/<文档名>/
 ├── sanitized.md            # 脱敏后的 Markdown（图片链接指向 images_masked/）
-├── images_masked/          # 打码（或无敏感）图片副本
+├── images_masked/          # 每张抽取图——打码副本；未打码时即原图
 └── audit.json              # 公开审计摘要：字段命中数 + 掩码后文本，不含敏感原文
 ```
 
@@ -116,6 +128,8 @@ print(result.detections)       # 每条含 field_type / start / end / masked_val
 | `hybrid` | 两者都跑，规则结果在重叠时优先 |
 
 LLM 只做定位不重写，并有**幻觉硬防线**：value 在原文回匹配不到即丢弃（宁漏勿错）；`temperature=0` + `response_format=json_object`。
+
+分块是 block 感知的，并随每篇文档的标题结构自适应：`text.chunking.title_level_limit`（默认 `auto`，也可固定为某级，0=最高）决定哪个级别的标题开启新一轮 LLM 调用——大章节切分调用、小标题与正文累积；表格永远独立成块，且每个 chunk 都是原文的精确切片。`text.chunking.chunk_size` 设置单次调用的目标字符数。
 
 ## 📋 默认敏感字段（config/fields.yaml）
 
@@ -186,7 +200,7 @@ pysanitize/
 ├── cli.py      argparse CLI
 ├── llm/        LLM 门面（openai / pingan 多 provider）
 └── report.py   audit.json / sensitive_report.json
-config/         fields.yaml（字段规格）/ pipeline.yaml（阶段开关）/ llm/*.yaml（模型配置）
+config/         本地覆盖（git 忽略，可选）：fields.yaml（字段规格）/ pipeline.yaml（阶段开关）/ llm/*.yaml（模型配置）；缺省用内置默认
 ```
 
 扩展点：**加字段→改 fields.yaml；加检测器→写一个类进 registry；加图片目标→写一个类进 `build_detectors` 路由；加输出格式→M2 加 renderer/**。接口都只有一个方法，不碰主干。

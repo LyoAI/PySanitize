@@ -12,12 +12,9 @@ from __future__ import annotations
 import re
 
 from pysanitize.parser.document import ParsedDocument
-from pysanitize.utils import get_logger
 
 from .base import Detection, TextDetector
 from .specs import FieldSpec, load_field_specs, select_specs
-
-logger = get_logger()
 
 # --------------------------------------------------------------------------
 # Checksums (GB 11643-1999 for ID card, GB 32100-2015 for unified credit code)
@@ -77,8 +74,7 @@ _NAME_BLACKLIST = frozenset(
     "人事 行政 部门 账号 账户 卡号 手机 电话 邮箱 地址 日期 时间 经办 担保".split()
 )
 
-# Given-name tail chars that mark a connector/particle rather than a name
-# ("合作方为张三与李四" must capture 张三, not 张三与).
+# Connectors/particles that end a name run ("合作方为张三与李四" → 张三).
 _NAME_GIVEN_STOP = frozenset("与和及或等以及被把将让以向对从为是之的了着过我你他她它们这那其该")
 
 # Context labels that strongly imply the following 2-3 CJK chars are a name,
@@ -90,7 +86,6 @@ _NAME_CONTEXT_RE = re.compile(
     r"[:：\s]*(?:为|是|由|系)?([一-龥]{2,3})"
 )
 
-# A name candidate must not be flanked by CJK/letter/digit on either side.
 _CJK = "一-鿿"
 _FLANK_RE = re.compile(rf"[\w{_CJK}]")
 
@@ -349,14 +344,8 @@ class RuleDetector(TextDetector):
 
     @staticmethod
     def _company_start(text: str, suffix_start: int) -> int:
-        """Backtrack from a company suffix to the name's start.
-
-        Scans leftward, stopping when the text immediately before the candidate
-        is a boundary, a particle ("为"/"由"/"的"...), or a role word
-        ("甲方", "该公司"). Mid-sentence company names ("甲方为北京某某科技…")
-        therefore stop at the particle instead of dragging in the sentence.
-        Deictic chars inside a name ("北京某某科技") never stop the scan.
-        """
+        """Backtrack from the suffix to the name's start, stopping at a
+        boundary, particle, or role word ("甲方为北京某某科技…" → 北京某某科技)."""
         limit = max(0, suffix_start - _COMPANY_MAX_BACK)
         i = suffix_start
         while i > limit:

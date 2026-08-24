@@ -98,13 +98,15 @@ def test_image_masking_skipped_without_classes(make_doc, monkeypatch, tmp_path):
     _patch_parse(monkeypatch, doc)
     r = pl.sanitize_document("doc.pdf", detector="rules", mask_images=True,
                              out_dir=tmp_path / "out")
-    assert not (r.out_dir / "images_masked").exists()  # nothing processed
+    # no targets → nothing masked, but originals are still copied under images_masked/
+    assert (r.out_dir / "images_masked" / "aabb.jpg").exists()
+    assert "images_masked/aabb.jpg" in r.sanitized_md.read_text(encoding="utf-8")
     assert r.images_masked == 0
 
 
 def test_mask_images_mosaics_detected_regions(monkeypatch, tmp_path):
-    # _mask_images end-to-end with a fake detector returning labeled boxes:
-    # real mosaic applied, name_map points into images_masked/.
+    # _prepare_images end-to-end with a fake detector returning labeled boxes:
+    # real mosaic applied, name_map points into images/.
     img_dir = tmp_path / "md" / "doc" / "images"
     img_dir.mkdir(parents=True)
     img = img_dir / "logo.png"
@@ -120,8 +122,8 @@ def test_mask_images_mosaics_detected_regions(monkeypatch, tmp_path):
             return [DetectedObject(10, 10, 50, 50, label="text", confidence=0.9)]
 
     monkeypatch.setattr(pl, "build_detectors", lambda *a, **k: [FakeDetector()])
-    masked, name_map = pl._mask_images(
-        doc, tmp_path / "out", classes=["text"], backend="auto",
+    masked, name_map = pl._prepare_images(
+        doc, tmp_path / "out", mask=True, classes=["text"], backend="auto",
         model_path=None, score_threshold=0.5, factor=16,
     )
     assert len(masked) == 1
@@ -141,10 +143,15 @@ def test_llm_provider_and_model_flow_to_detector(make_doc, monkeypatch, tmp_path
     seen = {}
 
     class FakeLLMDetector:
-        def __init__(self, model=None, provider=None, fields=None):
+        def __init__(
+            self, model=None, provider=None, fields=None,
+            chunk_size=None, title_level_limit=None,
+        ):
             seen["model"] = model
             seen["provider"] = provider
             seen["fields"] = fields
+            seen["chunk_size"] = chunk_size
+            seen["title_level_limit"] = title_level_limit
 
         def detect(self, doc):
             return []
@@ -153,7 +160,12 @@ def test_llm_provider_and_model_flow_to_detector(make_doc, monkeypatch, tmp_path
     pl.sanitize_document("doc.pdf", detector="hybrid",
                          llm_model="qwen3.6-27b", llm_provider="pingan",
                          out_dir=tmp_path / "out")
-    assert seen == {"model": "qwen3.6-27b", "provider": "pingan", "fields": None}
+    assert seen["model"] == "qwen3.6-27b"
+    assert seen["provider"] == "pingan"
+    assert seen["fields"] is None
+    # chunking comes from config/pipeline.yaml, not the CLI
+    assert seen["chunk_size"] == 6000
+    assert seen["title_level_limit"] == "auto"
 
 
 def test_llm_provider_defaults_from_config(make_doc, monkeypatch, tmp_path):
@@ -162,9 +174,14 @@ def test_llm_provider_defaults_from_config(make_doc, monkeypatch, tmp_path):
     seen = {}
 
     class FakeLLMDetector:
-        def __init__(self, model=None, provider=None, fields=None):
+        def __init__(
+            self, model=None, provider=None, fields=None,
+            chunk_size=None, title_level_limit=None,
+        ):
             seen["model"] = model
             seen["provider"] = provider
+            seen["chunk_size"] = chunk_size
+            seen["title_level_limit"] = title_level_limit
 
         def detect(self, doc):
             return []
@@ -173,6 +190,8 @@ def test_llm_provider_defaults_from_config(make_doc, monkeypatch, tmp_path):
     pl.sanitize_document("doc.pdf", detector="hybrid", out_dir=tmp_path / "out")
     assert seen["provider"] == "openai"  # config/pipeline.yaml text.provider
     assert seen["model"] == "deepseek-v4-flash"  # config/pipeline.yaml text.model
+    assert seen["chunk_size"] == 6000  # config/pipeline.yaml text.chunking.chunk_size
+    assert seen["title_level_limit"] == "auto"  # text.chunking.title_level_limit
 
 
 def test_hybrid_uses_both_detectors(make_doc, monkeypatch, tmp_path):

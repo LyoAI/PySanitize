@@ -5,9 +5,6 @@ CLI is invoked via ``subprocess`` — the CLI starts a throwaway local server, s
 parsing is fully local, no external API. Only the files MinerU leaves on disk
 are consumed (``<stem>_content_list_v2.json``), so the same output is reusable
 across machines regardless of how MinerU itself was run.
-
-The projection here is pure text; geometry (bbox) lives in ``middle.json`` and
-is loaded separately by ``middle.py`` for the M2 renderer.
 """
 
 from __future__ import annotations
@@ -95,12 +92,12 @@ def parse_blocks(
 
 
 def pair_images(doc: Path, out_dir: Path, blocks: list[Block]) -> list[ExtractedImage]:
-    """Pair hash-named files under ``images/`` with image-type blocks.
+    """Resolve each image-bearing block's file and surface every extracted image.
 
-    MinerU names extracted images by content hash (``sha256.jpg``), so the only
-    stable link is reading order: the ``i``-th image file pairs with the
-    ``i``-th ``type=image`` block. Extra files beyond the block count are still
-    surfaced so the face detector scans them.
+    Blocks carrying an embedded image (``image``/``chart``/...) record the exact
+    ``image_source.path`` during projection; resolve it to the file under
+    ``images/`` here (by filename, not reading-order guesswork). Every extracted
+    file is still surfaced so the image detectors scan them all.
     """
     images_dir = _locate_images_dir(doc, out_dir)
     if images_dir is None:
@@ -109,13 +106,20 @@ def pair_images(doc: Path, out_dir: Path, blocks: list[Block]) -> list[Extracted
         (p for p in images_dir.iterdir() if p.suffix.lower() in _IMAGE_SUFFIXES),
         key=lambda p: p.name,
     )
-    image_blocks = [b for b in blocks if b.type == "image"]
+    by_name = {p.name: p for p in files}
     out: list[ExtractedImage] = []
-    for block, path in zip(image_blocks, files):
-        block.image_path = path
-        out.append(ExtractedImage(path=path, page=block.page, caption=block.text))
-    for path in files[len(image_blocks):]:
-        out.append(ExtractedImage(path=path, page=1))
+    for block in blocks:
+        if block.image_path is None:
+            continue
+        src = by_name.get(block.image_path.name)
+        if src is None:
+            continue
+        block.image_path = src
+        out.append(ExtractedImage(path=src, page=block.page, caption=block.text))
+    covered = {img.path.name for img in out}
+    for path in files:
+        if path.name not in covered:
+            out.append(ExtractedImage(path=path, page=1))
     return out
 
 
@@ -237,10 +241,12 @@ def _project_record(rec: dict, page: int, order: int) -> Block | None:
         # v2: text nested under content.<field>, heading level carried there.
         text = _v2_text(kind, content)
         level = content.get("level") if kind == "title" else None
+        image_path = _image_source_path(content)
     else:
         # v1: text/table_body/text_level at record top level.
         text = _v1_text(rec)
         level = rec.get("text_level")
+        image_path = None
     return Block(
         block_id=f"b{order}",
         type=kind,
@@ -248,7 +254,14 @@ def _project_record(rec: dict, page: int, order: int) -> Block | None:
         page=page,
         order=order,
         level=level,
+        image_path=image_path,
     )
+
+
+def _image_source_path(content: dict) -> Path | None:
+    """Exact extracted-image file (``image_source.path``) for image/chart blocks."""
+    path = content.get("image_source", {}).get("path")
+    return Path(path) if isinstance(path, str) and path else None
 
 
 def _v2_text(kind: str, content: dict) -> str:

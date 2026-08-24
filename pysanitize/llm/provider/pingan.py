@@ -247,6 +247,3 @@ class PingAnLLMProvider(LLMProvider):
             logger.error(f"Error occurred while invoking the LLM: {e}")
             return LLMResponse(content="Error: Failed to get response from LLM.", tool_calls=[], finish_reason="error", usage={})
     
-    def get_default_model(self) -> str:
-        """Get the default model."""
-        return self.default_model
