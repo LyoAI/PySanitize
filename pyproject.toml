@@ -1,0 +1,48 @@
+[project]
+name = "pysanitize"
+version = "0.2.0"
+description = "多格式文档脱敏工具（PDF/DOCX/Excel/扫描件）：MinerU 解析 + 规则/LLM 敏感字段检测 + 文本/图片脱敏"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1",
+    "python-dotenv",
+    "colorlog",
+    "pyyaml",
+    "lxml",
+    "pydantic>=2",
+    "numpy",
+    "Pillow",
+    "opencv-python>=4.8,<5.0",  # <5 keeps CascadeClassifier (Haar offline fallback); 5.x removed it
+    "json-repair",
+    "six",  # mineru[pipeline] imports it transitively but doesn't declare it
+    "mineru[pipeline]>=3.4.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "reportlab",
+    "pymupdf",
+]
+
+[project.optional-dependencies]
+# YOLO-based object detection (heavier; GPU-capable). Default face backend is
+# OpenCV YuNet, which needs no extra install. Needed for any `--image-classes`
+# other than `face` (and for face with `--image-backend yolo`).
+image-yolo = ["ultralytics"]
+# OCR text-region detection (`--image-classes text`): masks every printed text
+# region in an image. Ships paddlepaddle, which is heavy.
+image-ocr = ["paddleocr"]
+# M2 milestone: redact original-format documents (docx/xlsx).
+render-office = ["python-docx", "openpyxl"]
+
+[project.scripts]
+pysanitize = "pysanitize.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pysanitize"]
