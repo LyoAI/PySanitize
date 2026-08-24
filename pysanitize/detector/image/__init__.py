@@ -8,7 +8,7 @@ The public entry is :func:`build_detectors`, which turns a list of *classes*
 - anything else → YOLO object detection filtered to those class names
 
 An empty class list means *no image masking at all* — the user must explicitly
-name their targets (see the "默认不检测图片" decision), so a bare
+name their targets (the "no image detection by default" decision), so a bare
 ``--mask-images`` has no effect on images.
 """
 
@@ -69,14 +69,14 @@ def build_detectors(
             if obj:
                 detectors.append(_build_yolo(model_path, obj, score_threshold))
     except Exception as e:
-        logger.warning("YOLO 检测不可用（%s），跳过 %s 目标", e, ",".join(face + obj))
+        logger.warning("YOLO detection unavailable (%s), skipping %s targets", e, ",".join(face + obj))
     if text:
         try:
             from .ocr import OCRTextDetector
 
             detectors.append(OCRTextDetector(confidence=score_threshold))
         except Exception as e:
-            logger.warning("OCR 文字检测不可用（%s），跳过 text 目标", e)
+            logger.warning("OCR text detection unavailable (%s), skipping text target", e)
     return detectors
 
 

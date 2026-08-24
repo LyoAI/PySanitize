@@ -1,64 +1,67 @@
-# 默认敏感字段规格：识别什么 + 如何掩码。
+# Default sensitive-field specs: what to detect and how to mask it.
 #
-# 每个字段一个条目：
-#   pattern   —— 正则（编译后使用；person_name / company_name 留空，走启发式）
-#   heuristic —— "checksum_id"  身份证 GB 11643 校验位
-#                "checksum_uscc" 统一社会信用代码 GB 32100 校验
-#                "surname_context" / "company_suffix" 词典启发式
-#   mask      —— template 固定占位符，或 keep_head/keep_tail/mask_char 保留前后 N 位
-#   enabled   —— false 的字段默认不检测（可在 CLI --fields 中重新启用）
-#   confidence—— 规则命中置信度（重叠消解时规则 vs LLM 的优先级参考）
+# One entry per field:
+#   pattern   - regex source (compiled at load; empty for heuristic-only fields
+#               like person_name / company_name)
+#   heuristic - "checksum_id"   ID-card checksum per GB 11643
+#               "checksum_uscc" USCC checksum per GB 32100
+#               "surname_context" / "company_suffix" dictionary heuristics
+#   mask      - fixed `template`, or keep_head/keep_tail/mask_char to keep the
+#               first/last N characters
+#   enabled   - fields disabled by default are still detected when explicitly
+#               named via `--fields`
+#   confidence- rule-hit confidence (priority reference vs LLM on overlaps)
 #
-# 掩码统一为固定长度，避免破坏 markdown 表格对齐。
+# Masks are fixed-length so markdown tables stay aligned.
 
 phone:
-  label_zh: 手机号
+  label: phone number
   pattern: '(?<!\d)1[3-9]\d{9}(?!\d)'
   confidence: 1.0
   mask: { keep_head: 3, keep_tail: 4, mask_char: '*' }
 
 id_card:
-  label_zh: 身份证号
+  label: national ID number
   pattern: '(?<![0-9A-Za-z])[1-9]\d{16}[\dXx](?![0-9A-Za-z])'
   heuristic: checksum_id
   confidence: 1.0
   mask: { keep_head: 6, keep_tail: 4, mask_char: '*' }
 
 email:
-  label_zh: 邮箱
+  label: email address
   pattern: '(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![A-Za-z0-9])'
   confidence: 1.0
   mask: { template: '****@***' }
 
 credit_code:
-  label_zh: 统一社会信用代码
+  label: unified social credit code
   pattern: '(?<![0-9A-Za-z])[0-9A-HJ-NPQRTUWXY]{18}(?![0-9A-Za-z])'
   heuristic: checksum_uscc
   confidence: 1.0
   mask: { keep_head: 0, keep_tail: 4, mask_char: '*' }
 
 stock_code:
-  label_zh: 股票代码
+  label: stock code
   pattern: '(?<!\d)(?:60\d{4}|68\d{4}|00\d{4}|30\d{4})(?!\d)'
   confidence: 0.8
   mask: { template: '******' }
 
 bank_account:
-  label_zh: 银行账号
+  label: bank account number
   pattern: '(?<!\d)\d{16,19}(?!\d)'
   confidence: 0.5
   enabled: false
   mask: { keep_head: 4, keep_tail: 4, mask_char: '*' }
 
 person_name:
-  label_zh: 人名
+  label: person name
   pattern: ''
   heuristic: surname_context
   confidence: 0.9
   mask: { template: '***' }
 
 company_name:
-  label_zh: 公司名
+  label: company name
   pattern: ''
   heuristic: company_suffix
   confidence: 0.9

@@ -36,21 +36,21 @@ MAX_VALUE_LEN = 64
 MAX_COMPLETION_TOKENS = 4000
 
 _FIELD_DOC = "\n".join(
-    f"- {name}：{spec.label_zh}" for name, spec in load_field_specs().items()
+    f"- {name}: {spec.label}" for name, spec in load_field_specs().items()
 )
 
-SYSTEM_PROMPT = """你是一个文档脱敏助手。你的任务是在给定文本中【定位】敏感字段，而不是改写、摘要或翻译文本。
+SYSTEM_PROMPT = """You are a document desensitization assistant. Your job is to LOCATE sensitive fields in the given text — never rewrite, summarize, or translate it.
 
-输出一个 JSON 对象：{"findings": [{"field_type": "...", "value": "..."}]}
+Output a JSON object: {"findings": [{"field_type": "...", "value": "..."}]}
 
-可用 field_type（必须使用其中之一）：
+Available field_type values (use one of these only):
 """ + _FIELD_DOC + """
 
-要求：
-1. value 必须是原文中【逐字出现】的连续子串，不得增删改字、不得归一化（如去掉空格/标点）、不得转义。
-2. 每条 finding 的 value 都要能在原文中原样找到；找不到的不要输出。
-3. 宁缺勿错：不确定的不要输出；没有敏感信息时输出 {"findings": []}。
-4. 只输出 JSON，不要任何解释、代码块或前后缀文字。"""
+Rules:
+1. value must be a contiguous substring that appears VERBATIM in the text. Do not add, drop, or alter characters, do not normalize (e.g. remove spaces/punctuation), do not escape.
+2. Every finding's value must be findable verbatim in the text; skip anything that is not.
+3. Better to miss than to be wrong: skip uncertain values; output {"findings": []} when there is no sensitive information.
+4. Output only JSON — no explanations, code fences, or surrounding text."""
 
 
 def chunk_text(
@@ -165,7 +165,7 @@ class LLMDetector(TextDetector):
         except Exception as e:
             # No API key configured (or a broken config): degrade gracefully so
             # a hybrid run still falls back to rules instead of failing hard.
-            logger.warning("LLM 检测不可用（%s），跳过 LLM 检测", e)
+            logger.warning("LLM detection unavailable (%s), skipping LLM detection", e)
             return []
         out: list[Detection] = []
         for offset, chunk in chunk_text(doc.text):
@@ -180,7 +180,7 @@ class LLMDetector(TextDetector):
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": "请定位下面文本中的敏感字段：\n\n" + chunk,
+                "content": "Locate sensitive fields in the text below:\n\n" + chunk,
             },
         ]
         try:

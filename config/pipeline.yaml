@@ -1,20 +1,21 @@
-# 管道配置：各阶段开关与参数（pysanitize sanitize 读取）。
+# Pipeline config: per-stage switches and parameters (read by `pysanitize sanitize`).
 #
-# 命令行参数优先于此文件；未指定的项用这里给的值。
+# CLI flags take precedence over this file; anything not passed on the command
+# line falls back to the values here.
 
 text:
   detector: rules            # rules | llm | hybrid
-  model: deepseek-v4-flash   # LLM 模型（config/llm/<model>.yaml 文件名，detector 为 llm/hybrid 时）
-  provider: openai           # config/llm/<model>.yaml 里的 provider 段：openai | pingan
-  verify_checksums: true     # 校验身份证/信用代码校验位（rules 模式）
+  model: deepseek-v4-flash   # LLM model (config/llm/<model>.yaml filename, when detector is llm/hybrid)
+  provider: openai           # provider section in config/llm/<model>.yaml: openai | pingan
+  verify_checksums: true     # validate ID-card / USCC checksums (rules mode)
 
 image:
-  enabled: false             # --mask-images 可临时打开
-  classes: []                # 打码目标：face | text | <YOLO 类别名>（如 person,car）；空 = 不检测图片
-  detector: auto             # 人脸后端（classes 含 face 时）：auto | yunet | haar | yolo
-  score_threshold: 0.5       # 检测置信度阈值
-  mosaic_factor: 16          # 马赛克块大小
-  model_path: ""             # 检测模型权重（YuNet onnx / YOLO .pt；默认自动下载）
+  enabled: false             # can be flipped on temporarily with --mask-images
+  classes: []                # mask targets: face | text | <YOLO class name> (e.g. person,car); empty = no image detection
+  detector: auto             # face backend (when classes include face): auto | yunet | haar | yolo
+  score_threshold: 0.5       # detection confidence threshold
+  mosaic_factor: 16          # mosaic block size
+  model_path: ""             # detection weights (YuNet onnx / YOLO .pt; auto-downloaded by default)
 
 output:
-  audit: false               # --audit 时额外写出含原文的 sensitive_report.json
+  audit: false               # also write sensitive_report.json with raw values when --audit

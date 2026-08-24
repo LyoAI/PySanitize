@@ -1,7 +1,7 @@
 [project]
 name = "pysanitize"
 version = "0.2.0"
-description = "多格式文档脱敏工具（PDF/DOCX/Excel/扫描件）：MinerU 解析 + 规则/LLM 敏感字段检测 + 文本/图片脱敏"
+description = "Multi-format document desensitization (PDF/DOCX/Excel/scans): MinerU parse + rules/LLM sensitive-field detection + text/image masking"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

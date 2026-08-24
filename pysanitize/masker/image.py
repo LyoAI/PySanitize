@@ -55,6 +55,6 @@ class ImageMasker(Masker):
         dst.parent.mkdir(parents=True, exist_ok=True)
         out.save(dst)
         logger.debug(
-            "masked %s -> %s (%d 处目标)", src.name, dst.name, len(boxes)
+            "masked %s -> %s (%d regions)", src.name, dst.name, len(boxes)
         )
         return dst

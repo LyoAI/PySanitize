@@ -16,21 +16,21 @@ import json_repair
 import time
 
 
-# 生成日志记录器
+# module logger
 logger = get_logger()
 
 class PingAnLLMProvider(LLMProvider):
-    """平安智能大模型接口实现"""
+    """PingAn LLM platform interface implementation."""
 
     def __init__(self, api_key: str = "token-abc", api_base: str = "http://localhost:8000/v1", default_model: str = "default",
                  extra_headers: dict[str, any] | None = None):
         super().__init__(api_key, api_base)
         self.extra_headers = extra_headers or {}
-        # 大模型平台应用appKey
+        # LLM platform application appKey
         self.app_key = self.extra_headers.pop("appKey", "")
-        # 大模型平台应用appsecret
+        # LLM platform application appSecret
         self.app_secret = self.extra_headers.pop("appSecret", "")
-        # 网关eagw上获取的凭据密钥
+        # credential secret obtained from the eagw gateway
         self.rsa_private_key = self.extra_headers.pop("rsaPrivateKey", "")
         self.openapi_credential = self.extra_headers.pop("openApiCredential", "")
         self.scene_id = int(self.extra_headers.pop("sceneId", ""))
@@ -48,7 +48,7 @@ class PingAnLLMProvider(LLMProvider):
         self.requestTime = str(int(time.time() * 1000))
 
     def get_gpt_sign(self, app_key: str, app_secret: str, requestTime: int) -> str:
-        """生成GPT接口调用签名"""
+        """Generate the GPT interface call signature."""
         params = {
             "openApiRequestTime": str(requestTime),
             "appKey": app_key,
@@ -61,7 +61,7 @@ class PingAnLLMProvider(LLMProvider):
 
     def get_sign(self, rsaPrivateKey, requestTime):
         '''
-        根据凭证密钥生成签名
+        Generate the signature from the credential private key.
         '''
         binary_key = binascii.a2b_hex(rsaPrivateKey)
         pkcs8_private_key = RSA.import_key(binary_key)
@@ -110,7 +110,7 @@ class PingAnLLMProvider(LLMProvider):
         timeout: Optional[float] = None,  # None = inherit the client timeout
         stream: bool = False,
     ) -> LLMResponse:
-        """调用平安智能大模型接口"""
+        """Invoke the PingAn LLM platform interface."""
         request_time = str(int(time.time() * 1000))
         get_signature = self.get_gpt_sign(self.app_key, self.app_secret, request_time)
         eagw_sign = self.get_sign(self.rsa_private_key, request_time)
@@ -145,7 +145,7 @@ class PingAnLLMProvider(LLMProvider):
         if tools:
             kwargs.update(tools=tools, tool_choice="auto")
         
-        # 平安大模型平台请求头有2m长度的限制
+        # the PingAn platform caps request headers at 2MB
         current_size = len(json.dumps(kwargs, ensure_ascii=False).encode("utf-8"))
         if current_size > 2000000:
             logger.warning(f"The request size {current_size} exceeds the limit of 2M length. Consider reducing the size of messages or tools.")
@@ -186,7 +186,7 @@ class PingAnLLMProvider(LLMProvider):
         timeout: Optional[float] = None,  # None = inherit the client timeout
         stream: bool = False,
     ) -> LLMResponse:
-        """异步调用平安智能大模型接口"""
+        """Asynchronously invoke the PingAn LLM platform interface."""
         request_time = str(int(time.time() * 1000))
         get_signature = self.get_gpt_sign(self.app_key, self.app_secret, request_time)
         eagw_sign = self.get_sign(self.rsa_private_key, request_time)
@@ -221,7 +221,7 @@ class PingAnLLMProvider(LLMProvider):
         if tools:
             kwargs.update(tools=tools, tool_choice="auto")
         
-        # 平安大模型平台请求头有2m长度的限制
+        # the PingAn platform caps request headers at 2MB
         current_size = len(json.dumps(kwargs, ensure_ascii=False).encode("utf-8"))
         if current_size > 2000000:
             logger.warning(f"The request size {current_size} exceeds the limit of 2M length. Consider reducing the size of messages or tools.")
@@ -248,5 +248,5 @@ class PingAnLLMProvider(LLMProvider):
             return LLMResponse(content="Error: Failed to get response from LLM.", tool_calls=[], finish_reason="error", usage={})
     
     def get_default_model(self) -> str:
-        """获取默认模型"""
+        """Get the default model."""
         return self.default_model

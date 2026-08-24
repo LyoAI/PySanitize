@@ -55,10 +55,10 @@ def sanitize_document(
     detector: str | None = None,          # rules | llm | hybrid (config default)
     fields: list[str] | None = None,      # subset of field types to detect
     llm_model: str | None = None,         # LLM model (llm / hybrid)
-    llm_provider: str | None = None,      # provider 段：openai | pingan（config/llm/<model>.yaml）
+    llm_provider: str | None = None,      # provider section: openai | pingan (config/llm/<model>.yaml)
     mask_images: bool | None = None,      # None → config image.enabled
-    image_classes: list[str] | None = None,  # 打码目标 face|text|<yolo类>；空=不打码
-    image_backend: str | None = None,     # face 后端 auto | yunet | haar | yolo
+    image_classes: list[str] | None = None,  # mask targets face|text|<yolo class>; empty = no masking
+    image_backend: str | None = None,     # face backend auto | yunet | haar | yolo
     image_model_path: str | Path | None = None,
     score_threshold: float | None = None,
     mosaic_factor: int | None = None,
@@ -198,7 +198,7 @@ def sanitize_document(
     sensitive_path = write_sensitive_report(info, out_dir) if audit else None
 
     logger.success(
-        "%s: %d 处敏感字段掩码，%d/%d 张图片打码 → %s",
+        "%s: %d sensitive spans masked, %d/%d images mosaiced -> %s",
         doc.doc_id,
         len(detections),
         len(masked_images),
@@ -244,14 +244,15 @@ def _mask_images(
         return [], {}
     if not classes:
         logger.warning(
-            "图片打码已开启，但未指定检测目标（image.classes / --image-classes），跳过图片处理"
+            "Image masking is enabled but no targets were given (image.classes / --image-classes), "
+            "skipping image processing"
         )
         return [], {}
     detectors = build_detectors(
         classes, backend=backend, model_path=model_path, score_threshold=score_threshold
     )
     if not detectors:
-        logger.warning("没有可用的图片检测器，跳过图片打码")
+        logger.warning("No image detectors available, skipping image masking")
         return [], {}
     dst_dir = out_dir / "images_masked"
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -273,7 +274,7 @@ def _mask_images(
             masker.mask_file(src, dst, boxes)
             masked.append(dst)
             labels = ",".join(sorted({b.label for b in boxes}))
-            logger.debug("mosaicked %s (%d 处: %s)", src.name, len(boxes), labels)
+            logger.debug("mosaicked %s (%d regions: %s)", src.name, len(boxes), labels)
         else:
             shutil.copy2(src, dst)  # nothing found — keep the original alongside
         name_map[src.name] = dst

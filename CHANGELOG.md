@@ -2,58 +2,49 @@
 
 ## [0.2.0] - 2026-08-24
 
-图片脱敏从「仅人脸」泛化为**按类别驱动**：用户指定目标 → 检测模型定位 → 打码。
+Image desensitization generalized from "faces only" to **class-driven**: the user
+names the targets, the detection model locates them, and they get mosaiced.
 
-### 新增
+### Added
 
-- **detector/image**：`FaceBox` → `DetectedObject`（新增 `label`：`face` / `text` / YOLO 类别名，保留 `FaceBox` 别名）
-- **YOLO 类别过滤**：`YOLODetector(classes=[...])` 支持任意权重 + 按类别名过滤（`row.cls` → `model.names`）；`YOLOFaceDetector` 别名保留
-- **OCR 文字区域**：`OCRTextDetector`（PaddleOCR，`--extra image-ocr`），`text` 类别打码图片中全部印刷文字（公司名/印章/截图）
-- **`build_detectors(classes, ...)`**：类别→后端路由 —— `face`→YuNet/Haar/YOLO，`text`→OCR，其它→YOLO 类别过滤；后端缺失时降级警告不硬崩
-- **默认不检测图片**：`image.classes` 为空时 `--mask-images` 不处理任何图片（宁可漏、不可误打码）；CLI 新增 `--image-classes face,text,person`（逗号分隔）
+- **detector/image**: `FaceBox` → `DetectedObject` (new `label`: `face` / `text` / a YOLO class name; `FaceBox` kept as an alias)
+- **YOLO class filtering**: `YOLODetector(classes=[...])` supports arbitrary weights + per-class filtering (`row.cls` → `model.names`); `YOLOFaceDetector` alias kept
+- **OCR text regions**: `OCRTextDetector` (PaddleOCR, `--extra image-ocr`); the `text` class mosaics every printed-text region in an image (company names / seals / screenshots)
+- **`build_detectors(classes, ...)`**: class → backend routing — `face` → YuNet/Haar/YOLO, `text` → OCR, anything else → YOLO class filter; missing backends degrade with a warning instead of crashing
+- **No image detection by default**: with `image.classes` empty, `--mask-images` leaves images untouched (better to miss than to wrongly mosaic); CLI gains `--image-classes face,text,person` (comma-separated)
 
-### 变更
+### Changed
 
-- **LLM 供应商/模型可指定**：CLI 新增 `--provider`（`openai`/`pingan`）与 `--model`，与 finsearch-bench 一致 —— `--provider` 选 `config/llm/<model>.yaml` 里的 provider 段；`sanitize_document(llm_provider=...)` + `config/pipeline.yaml` `text.provider`
-- `config/pipeline.yaml` 新增 `image.classes`（默认 `[]`）；`image.detector` 语义收敛为「人脸后端」
-- 所有图片检测器/掩码器输出与消费 `DetectedObject`（带 label，供审计区分目标）
+- **LLM provider/model selectable**: CLI adds `--provider` (`openai`/`pingan`) and `--model`, matching finsearch-bench — `--provider` picks a provider section in `config/llm/<model>.yaml`; `sanitize_document(llm_provider=...)` + `config/pipeline.yaml` `text.provider`
+- `config/pipeline.yaml` gains `image.classes` (default `[]`); `image.detector` is now the "face backend" setting
+- All image detectors/maskers emit and consume `DetectedObject` (with `label`, so the audit can tell targets apart)
 
-### 测试
+### Tests
 
-- 74 个单测（+13）：路由降级（空 classes / 缺 paddleocr / 缺 ultralytics）、YOLO 类别过滤、
-  OCR 框构建/置信度过滤/空页、`FaceBox` 别名、无 classes 时图片不处理
+- 74 unit tests (+13): routing fallback (empty classes / missing paddleocr / missing ultralytics), YOLO class filtering, OCR box building / confidence filtering / empty pages, `FaceBox` alias, images untouched when no classes
 
 ## [0.1.0] - 2026-08-24
 
-M1 MVP：多格式文档脱敏 pipeline（脱敏后 Markdown + 打码图片 + 审计报告）。
+M1 MVP: multi-format document desensitization pipeline (sanitized markdown + mosaiced images + audit report).
 
-### 新增
+### Added
 
-- **parser**：MinerU CLI 封装（`-p doc -o out -b backend -l ch`），支持 PDF/图片/DOCX/PPTX/XLSX；
-  `content_list_v2` 投影为 `Block`，图片按阅读顺序与 image 块配对；`ParsedDocument.text` 提供全文 +
-  每块字符偏移（meta 页眉/页脚不进脱敏文本）
-- **detector/rules**：正则 + 词典启发式，8 类默认字段；身份证（GB 11643）与统一社会信用代码（GB 32100）
-  校验位可开关；百家姓上下文人名、公司后缀回溯 + 边界/黑名单剪枝
-- **detector/llm**：LLM 只做定位（返回 `{field_type, value}` 逐字子串），chunk（6000+300 重叠）+ verbatim
-  回匹配得精确 offset，回匹配不到的 value 丢弃（幻觉硬防线）；`temperature=0` + `response_format=json_object`
-- **detector/registry**：多检测器汇总 + 精确去重 + 包含消解（规则命中优先于 LLM）
-- **masker/text**：按 offset 左→右重建输出，固定长度占位不破坏 markdown 表格对齐；重叠防御性合并
-- **detector/image**：YuNet（ONNX，首次自动下载）优先，离线降级 Haar；可选 `[image-yolo]` extra
-- **masker/image**：PIL NEAREST 分块马赛克（默认 16px），只覆盖检测框
-- **pipeline + cli + report**：`sanitize_document()` 编排；CLI `pysanitize sanitize <file>
-  [--detector rules|llm|hybrid] [--fields a,b] [--mask-images] [--audit]`；输出
-  `sanitized.md` + `images_masked/` + `audit.json`（公开摘要不含原文），`--audit` 时附含原文的
-  `sensitive_report.json`
-- **config**：`config/fields.yaml`（字段规格）、`config/pipeline.yaml`（阶段开关）、`config/llm/*.yaml`
-  （`${ENV_VAR}` 占位，去除明文 key）；`.env.example`
+- **parser**: MinerU CLI wrapper (`-p doc -o out -b backend -l ch`) supporting PDF/image/DOCX/PPTX/XLSX; `content_list_v2` projected to `Block`s, images paired with image blocks in reading order; `ParsedDocument.text` gives the full text + per-block char offsets (page headers/footers excluded from the desensitized text)
+- **detector/rules**: regex + dictionary heuristics, 8 default field types; ID-card (GB 11643) and USCC (GB 32100) checksums toggleable; surname-context person names, company-suffix backtracking with boundary/blacklist pruning
+- **detector/llm**: LLM only locates (returns `{field_type, value}` verbatim substrings); chunking (6000 chars + 300 overlap) + verbatim re-match for exact offsets; values that don't re-match are dropped (hallucination hard gate); `temperature=0` + `response_format=json_object`
+- **detector/registry**: aggregates detectors, exact dedup + containment resolution (rules win over LLM)
+- **masker/text**: left-to-right reconstruction by offset; fixed-length placeholders keep markdown tables aligned; defensive merging of overlaps
+- **detector/image**: YuNet (ONNX, auto-downloaded on first use) preferred, offline fallback to Haar; optional `[image-yolo]` extra
+- **masker/image**: PIL NEAREST block mosaic (default 16px), covering only detected boxes
+- **pipeline + cli + report**: `sanitize_document()` orchestration; CLI `pysanitize sanitize <file> [--detector rules|llm|hybrid] [--fields a,b] [--mask-images] [--audit]`; output `sanitized.md` + `images_masked/` + `audit.json` (public summary, no raw values), with `--audit` adding a `sensitive_report.json`
+- **config**: `config/fields.yaml` (field specs), `config/pipeline.yaml` (stage switches), `config/llm/*.yaml` (`${ENV_VAR}` placeholders, no plaintext keys); `.env.example`
 
-### 修复
+### Fixed
 
-- 修复脚手架残留：`finsearch.*` import → `pysanitize.*`；`openai>=1` / `mineru[pipeline]` 依赖补齐
-- `opencv-python` 钉在 `<5.0`（5.x 移除了 Haar `CascadeClassifier`，破坏离线降级路径）
-- `six` 显式声明（`mineru[pipeline]` 传递依赖缺失导致 pipeline 后端启动失败）
+- Scaffolding leftovers: `finsearch.*` imports → `pysanitize.*`; declared `openai>=1` / `mineru[pipeline]` deps
+- Pinned `opencv-python` `<5.0` (5.x removed Haar `CascadeClassifier`, breaking the offline fallback)
+- Explicit `six` dependency (missing transitive dep of `mineru[pipeline]` broke the pipeline backend)
 
-### 测试
+### Tests
 
-- 60 个单测：parser 投影/文档偏移、规则检测器（校验位/黑名单/边界）、LLM 检测器（chunk/回匹配/
-  幻觉过滤）、registry 消解、文本/图片掩码、pipeline 编排、CLI；真实 MinerU 端到端样例 PDF 验证通过
+- 60 unit tests: parser projection/document offsets, rules detector (checksums/blacklists/boundaries), LLM detector (chunking/re-match/hallucination filter), registry resolution, text/image masking, pipeline orchestration, CLI; end-to-end sample PDF verified against real MinerU

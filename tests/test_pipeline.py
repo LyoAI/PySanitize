@@ -85,7 +85,7 @@ def test_image_copy_and_link_rewrite(make_doc, monkeypatch, tmp_path):
 
 
 def test_image_masking_skipped_without_classes(make_doc, monkeypatch, tmp_path):
-    # "默认不检测图片": --mask-images without explicit targets does nothing.
+    # "no image detection by default": --mask-images without explicit targets does nothing.
     img_dir = tmp_path / "md" / "doc" / "images"
     img_dir.mkdir(parents=True)
     img = img_dir / "aabb.jpg"

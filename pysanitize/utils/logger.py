@@ -3,7 +3,7 @@ import sys
 import logging
 import colorlog
 
-# ---------- 1) 自定义 SUCCESS 等级 ----------
+# ---------- 1) custom SUCCESS level ----------
 SUCCESS_LEVEL_NUM = 25
 logging.addLevelName(SUCCESS_LEVEL_NUM, "SUCCESS")
 
@@ -13,9 +13,9 @@ def success(self, message, *args, **kwargs):
 
 logging.Logger.success = success
 
-# ---------- 2) stdout / stderr 分流的过滤器 ----------
+# ---------- 2) filters that split stdout / stderr ----------
 class MaxLevelFilter(logging.Filter):
-    """仅放行 level < max_level 的日志（用于 stdout）。"""
+    """Pass records below ``max_level`` only (for stdout)."""
     def __init__(self, max_level):
         super().__init__()
         self.max_level = max_level
@@ -23,16 +23,17 @@ class MaxLevelFilter(logging.Filter):
         return record.levelno < self.max_level
 
 class MinLevelFilter(logging.Filter):
-    """仅放行 level >= min_level 的日志（用于 stderr）。"""
+    """Pass records at ``min_level`` or above only (for stderr)."""
     def __init__(self, min_level):
         super().__init__()
         self.min_level = min_level
     def filter(self, record: logging.LogRecord) -> bool:
         return record.levelno >= self.min_level
 
-# ---------- 3) 贴近 loguru 的 ColoredFormatter ----------
+# ---------- 3) loguru-like ColoredFormatter ----------
 def _make_colored_formatter():
-    # 颜色映射（loguru 的感觉：DEBUG/INFO 偏冷色，WARNING 黄，ERROR/CRITICAL 红，SUCCESS 绿）
+    # color map (loguru feel: DEBUG/INFO cool tones, WARNING yellow,
+    # ERROR/CRITICAL red, SUCCESS green)
     log_colors = {
         "DEBUG":    "blue",
         "INFO":     "white",
@@ -41,7 +42,7 @@ def _make_colored_formatter():
         "ERROR":    "red",
         "CRITICAL": "red,bg_white",
     }
-    # 二级着色：让 levelname 与 message 按级别着色；name/func/line 用青色
+    # secondary coloring: levelname/message tinted by level; name/func/line cyan
     secondary = {
         "levelname": log_colors,
         "message":   {
@@ -52,11 +53,11 @@ def _make_colored_formatter():
             "ERROR":    "red",
             "CRITICAL": "red",
         },
-        # 这些是固定青色，模拟 loguru 的 <cyan> 标签
+        # these are fixed cyan, mimicking loguru's <cyan> tags
         "name":      {k: "cyan" for k in log_colors},
         "funcName":  {k: "cyan" for k in log_colors},
         "lineno":    {k: "cyan" for k in log_colors},
-        "asctime":   {k: "green" for k in log_colors},  # 时间绿色
+        "asctime":   {k: "green" for k in log_colors},  # timestamp in green
     }
 
 
@@ -76,33 +77,34 @@ def _make_colored_formatter():
         style="%",
     )
 
-# ---------- 4) 获取 logger（贴近 loguru 的 add 行为） ----------
+# ---------- 4) get_logger (mirrors loguru's add behaviour) ----------
 def get_logger(level: str = None) -> logging.Logger:
-    """返回一个名为 'PySanitize' 的 logger：
-    - 控制台输出分流：<ERROR 到 stdout；>=ERROR 到 stderr
-    - 颜色与格式尽量贴近 loguru 默认
-    - 避免重复添加 handler
+    """Return a logger named 'PySanitize':
+    - console output is split: <ERROR to stdout; >=ERROR to stderr
+    - colors and format aim to match loguru's defaults
+    - never adds a duplicate handler
     """
     if level is None:
         level = os.getenv("PYSANITIZE_LOGGING_LEVEL", "INFO")
 
     logger = logging.getLogger("PySanitize")
     logger.setLevel(level)
-    logger.propagate = False  # 避免向 root 传播造成重复输出
+    logger.propagate = False  # avoid duplicate output through the root logger
 
     if logger.handlers:
-        # 已初始化过，直接返回（可根据需要改成更新 handler 的级别/格式）
+        # already initialized — return it (swap for an update of level/format
+        # if you ever need to reconfigure at runtime)
         return logger
 
     colored_fmt = _make_colored_formatter()
 
-    # stdout：DEBUG/INFO/SUCCESS/WARNING
+    # stdout: DEBUG/INFO/SUCCESS/WARNING
     h_out = logging.StreamHandler(stream=sys.stdout)
     h_out.setLevel(level)
     h_out.addFilter(MaxLevelFilter(logging.ERROR))
     h_out.setFormatter(colored_fmt)
 
-    # stderr：ERROR/CRITICAL
+    # stderr: ERROR/CRITICAL
     h_err = logging.StreamHandler(stream=sys.stderr)
     h_err.setLevel(level)
     h_err.addFilter(MinLevelFilter(logging.ERROR))

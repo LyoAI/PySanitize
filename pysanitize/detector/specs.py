@@ -46,7 +46,7 @@ class FieldSpec:
     """One configurable sensitive field."""
 
     name: str
-    label_zh: str
+    label: str  # human-readable description shown to the LLM (English)
     pattern: str  # regex source; empty for heuristic-only fields
     mask: MaskSpec
     confidence: float = 1.0
@@ -78,7 +78,7 @@ def load_field_specs(path: Path | str = FIELDS_CONFIG) -> dict[str, FieldSpec]:
             mask = MaskSpec(template=str(mask_raw))
         specs[name] = FieldSpec(
             name=name,
-            label_zh=raw.get("label_zh", name),
+            label=raw.get("label", name),
             pattern=raw.get("pattern", ""),
             mask=mask,
             confidence=float(raw.get("confidence", 1.0)),
