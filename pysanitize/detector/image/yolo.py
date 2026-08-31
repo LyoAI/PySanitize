@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pysanitize.config import get_image_config
 from pysanitize.utils import get_logger
 
 from .base import DetectedObject, ImageDetector
@@ -27,14 +28,15 @@ class YOLODetector(ImageDetector):
         weights: model name or path (``yolo8n-face``, ``yolov8n.pt``, …).
         classes: class *names* to keep (e.g. ``["person", "car"]``). ``None``
             keeps everything the model detects.
-        confidence: per-box confidence threshold passed to ``model.predict``.
+        confidence: per-box confidence threshold passed to ``model.predict``
+            (default: ``image.yolo.confidence`` from the pipeline config).
     """
 
     def __init__(
         self,
         weights: str | Path = "yolo8n-face",
         classes: list[str] | None = None,
-        confidence: float = 0.25,
+        confidence: float | None = None,
     ):
         try:
             from ultralytics import YOLO
@@ -45,7 +47,11 @@ class YOLODetector(ImageDetector):
         self.model = YOLO(str(weights))
         self.names = self.model.names  # {cls_idx: name} (dict or list)
         self.classes = set(classes) if classes else None
-        self.confidence = confidence
+        self.confidence = (
+            float(get_image_config().get("yolo", {}).get("confidence", 0.25))
+            if confidence is None
+            else float(confidence)
+        )
 
     def _label_for(self, cls_idx: int) -> str:
         try:

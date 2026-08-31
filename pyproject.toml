@@ -27,6 +27,9 @@ dev = [
 ]
 
 [project.optional-dependencies]
+# Interactive TUI (`pysanitize --launch tui`): Textual app for field selection,
+# options and run monitoring. The plain CLI works without it.
+tui = ["textual>=3.0"]
 # YOLO-based object detection (heavier; GPU-capable). Default face backend is
 # OpenCV YuNet, which needs no extra install. Needed for any `--image-classes`
 # other than `face` (and for face with `--image-backend yolo`).

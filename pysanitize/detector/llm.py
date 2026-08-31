@@ -7,10 +7,14 @@ every value back into the chunk with ``re.finditer(re.escape(value))`` to
 recover precise global offsets; values that do not re-match are dropped — the
 hallucination hard gate (never mask a span the model only imagined). Chunks are
 block-aware (``chunk_blocks``): a major title opens a new section, a table
-stands alone, minor headings and prose accumulate to ``CHUNK_SIZE``, and every
+stands alone, minor headings and prose accumulate to ``chunk_size``, and every
 chunk is an exact slice of the document text. The title level that counts as
 "major" is derived per document from its actual heading structure by
 ``auto_title_level`` (or pinned via ``LLMDetector.title_level_limit``).
+
+All tunables (model/provider, chunking, value-length filters, completion cap)
+live in ``config/pipeline.yaml`` (``text:`` section) and are read through
+``pysanitize.config.get_text_config`` — no defaults are hardcoded here.
 """
 
 from __future__ import annotations
@@ -21,9 +25,11 @@ from typing import Any
 
 import json_repair
 
+from pysanitize.config import get_text_config
 from pysanitize.llm.llm_registry import get_llm
 from pysanitize.parser.blocks import Block
 from pysanitize.parser.document import ParsedDocument
+from pysanitize.prompts import build_field_doc, get_system_prompt, get_user_message
 from pysanitize.utils import get_logger
 
 from .base import Detection, TextDetector
@@ -31,41 +37,39 @@ from .specs import load_field_specs, select_specs
 
 logger = get_logger()
 
-DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_PROVIDER = "openai"
-CHUNK_SIZE = 6000
-MIN_VALUE_LEN = 2
-MAX_VALUE_LEN = 64
-MAX_COMPLETION_TOKENS = 4000
-
-# Room to search past the hard limit for a clean sentence break.
+# Room to search past the hard limit for a clean sentence break when splitting
+# an oversized block. Structural to the splitter, not worth a config knob.
 _BREAK_MARGIN = 200
 
-# Fixed title level for chunk_blocks' default (smaller = higher, MinerU 0 =
-# top): titles within it open a new section chunk, deeper headings accumulate
-# like prose. LLMDetector defaults to per-document "auto" instead (see
-# auto_title_level).
-TITLE_LEVEL_LIMIT = 1
+# chunk_blocks' title_level_limit sentinel: resolve the config value. In the
+# raw-function context a config "auto" has no per-document derivation, so it
+# falls back to the structural default (top-level titles only); LLMDetector
+# always passes an explicit int | None resolved via auto_title_level.
+_TITLE_LEVEL_DEFAULT = "default"
+# Structural fallback for that case (smaller = higher; MinerU level 0 = top).
+_TOP_TITLE_LEVEL = 1
 
-# auto_title_level: a level qualifies as a "chapter" only when it starts at
-# least this many sections and the average section is >= 1/4 of the chunk
-# budget — smaller sections are too tiny to justify their own LLM call.
-MIN_TITLE_SECTIONS = 3
+
+def _chunking_config() -> dict[str, Any]:
+    return get_text_config().get("chunking", {})
 
 
 def auto_title_level(
-    blocks: list[Block], text_len: int, chunk_size: int
+    blocks: list[Block], text_len: int, chunk_size: int, min_sections: int | None = None
 ) -> int | None:
     """Pick a title level that partitions the document into meaty sections.
 
     Scans levels coarsest-first and returns the first ``L`` where titles at
-    ``level <= L`` start at least ``MIN_TITLE_SECTIONS`` sections and the
-    average section is at least a quarter of the chunk budget. Returns
-    ``None`` when no level qualifies — e.g. a doc whose headings are all one
-    shallow level (800 tiny "chapters") — so the caller falls back to pure
-    budget accumulation. This adapts to per-document structure: a doc that
-    only has level-2 headings uses level 2, one with real chapters uses 1.
+    ``level <= L`` start at least ``min_sections`` sections (default:
+    ``text.min_title_sections`` from the pipeline config) and the average
+    section is at least a quarter of the chunk budget. Returns ``None`` when
+    no level qualifies — e.g. a doc whose headings are all one shallow level
+    (800 tiny "chapters") — so the caller falls back to pure budget
+    accumulation. This adapts to per-document structure: a doc that only has
+    level-2 headings uses level 2, one with real chapters uses 1.
     """
+    if min_sections is None:
+        min_sections = int(get_text_config().get("min_title_sections", 3))
     counts: dict[int, int] = {}
     for b in blocks:
         if b.type == "title" and b.char_start >= 0 and b.level is not None:
@@ -75,35 +79,29 @@ def auto_title_level(
     cumulative = 0
     for level in sorted(counts):
         cumulative += counts[level]
-        if cumulative < MIN_TITLE_SECTIONS:
+        if cumulative < min_sections:
             continue
         if text_len / cumulative >= chunk_size / 4:
             return level
     return None
 
-_FIELD_DOC = "\n".join(
-    f"- {name}: {spec.label}" for name, spec in load_field_specs().items()
-)
+def _field_doc() -> str:
+    """The available-``field_type`` bullet list, from the loaded field specs."""
+    return build_field_doc(
+        {name: spec.label for name, spec in load_field_specs().items()}
+    )
 
-SYSTEM_PROMPT = """You are a document desensitization assistant. Your job is to LOCATE sensitive fields in the given text — never rewrite, summarize, or translate it.
 
-Output a JSON object: {"findings": [{"field_type": "...", "value": "..."}]}
-
-Available field_type values (use one of these only):
-""" + _FIELD_DOC + """
-
-Rules:
-1. value must be a contiguous substring that appears VERBATIM in the text. Do not add, drop, or alter characters, do not normalize (e.g. remove spaces/punctuation), do not escape.
-2. Every finding's value must be findable verbatim in the text; skip anything that is not.
-3. Better to miss than to be wrong: skip uncertain values; output {"findings": []} when there is no sensitive information.
-4. Output only JSON — no explanations, code fences, or surrounding text."""
+def _system_prompt() -> str:
+    """System prompt from the ``prompts/`` template + current field specs."""
+    return get_system_prompt(_field_doc())
 
 
 def chunk_blocks(
     blocks: list[Block],
     text: str,
-    chunk_size: int = CHUNK_SIZE,
-    title_level_limit: int | None = TITLE_LEVEL_LIMIT,
+    chunk_size: int | None = None,
+    title_level_limit: int | str | None = _TITLE_LEVEL_DEFAULT,
 ) -> list[tuple[int, str]]:
     """Split ``blocks`` into semantic, non-overlapping chunks of ``text``.
 
@@ -114,9 +112,20 @@ def chunk_blocks(
     title boundaries entirely); prose accumulates to the ``chunk_size`` budget;
     page furniture (meta blocks) is skipped. A single block larger than the
     budget is split internally at paragraph/sentence boundaries.
+
+    Defaults come from ``config/pipeline.yaml`` (``text.chunking``): pass
+    ``chunk_size`` / ``title_level_limit`` explicitly to override. A config
+    ``title_level_limit`` of ``"auto"`` has no per-document derivation in this
+    raw-function context and falls back to top-level-titles-only.
     """
     if not blocks:
         return []
+    chunking = _chunking_config()
+    if chunk_size is None:
+        chunk_size = int(chunking.get("chunk_size", 6000))
+    if title_level_limit == _TITLE_LEVEL_DEFAULT:
+        limit = chunking.get("title_level_limit", "auto")
+        title_level_limit = limit if isinstance(limit, int) else _TOP_TITLE_LEVEL
     chunks: list[tuple[int, str]] = []
     run: list[Block] = []
 
@@ -233,22 +242,35 @@ def _locate_value(chunk: str, value: str) -> list[re.Match[str]]:
 
 class LLMDetector(TextDetector):
     """Detects sensitive spans via an LLM that *locates* (returns verbatim
-    values), not rewrites. Re-matching back to the text yields exact offsets."""
+    values), not rewrites. Re-matching back to the text yields exact offsets.
+
+    Model/provider, chunking and value-length filters default to the
+    ``text:`` section of ``config/pipeline.yaml``; pass explicit values to
+    override.
+    """
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
-        provider: str = DEFAULT_PROVIDER,
+        model: str | None = None,
+        provider: str | None = None,
         fields: list[str] | None = None,
-        chunk_size: int = CHUNK_SIZE,
+        chunk_size: int | None = None,
         title_level_limit: int | str = "auto",
     ):
-        self.model = model
-        self.provider = provider
-        self.chunk_size = chunk_size
+        cfg = get_text_config()
+        chunking = cfg.get("chunking", {})
+        self.model = model or cfg.get("model")
+        self.provider = provider or cfg.get("provider")
+        self.chunk_size = (
+            int(chunking.get("chunk_size", 6000)) if chunk_size is None else int(chunk_size)
+        )
         # "auto" derives a chapter level from the document's heading structure;
         # an int pins it; None disables title boundaries (budget + tables only).
         self.title_level_limit = title_level_limit
+        # Finding filters + per-call completion cap (hallucination gate tuning).
+        self.min_value_len = int(cfg.get("min_value_len", 2))
+        self.max_value_len = int(cfg.get("max_value_len", 64))
+        self.max_completion_tokens = int(cfg.get("max_completion_tokens", 4000))
         self.spec_names = set(select_specs(load_field_specs(), fields))
         self._llm = None  # lazy: only touch the API when detect() runs
 
@@ -282,18 +304,15 @@ class LLMDetector(TextDetector):
 
     def _query(self, llm, chunk: str) -> list[dict[str, Any]]:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": "Locate sensitive fields in the text below:\n\n" + chunk,
-            },
+            {"role": "system", "content": _system_prompt()},
+            {"role": "user", "content": get_user_message(chunk)},
         ]
         try:
             resp = llm.invoke(
                 messages,
                 temperature=0.0,
                 response_format={"type": "json_object"},
-                max_completion_tokens=MAX_COMPLETION_TOKENS,
+                max_completion_tokens=self.max_completion_tokens,
             )
         except Exception as e:  # transport/API error — fail this chunk, keep going
             logger.error("LLM call failed: %s", e)
@@ -312,7 +331,7 @@ class LLMDetector(TextDetector):
         value = str(finding.get("value", "")).strip()
         if field_type not in self.spec_names:
             return []
-        if not (MIN_VALUE_LEN <= len(value) <= MAX_VALUE_LEN):
+        if not (self.min_value_len <= len(value) <= self.max_value_len):
             return []
         out: list[Detection] = []
         for m in _locate_value(chunk, value):

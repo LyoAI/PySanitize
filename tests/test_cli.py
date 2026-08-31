@@ -1,4 +1,4 @@
-"""CLI: parser shape, version, and sanitize subcommand wiring."""
+"""CLI: parser shape, version, launch flags, and pipeline wiring."""
 
 from __future__ import annotations
 
@@ -20,37 +20,59 @@ def test_version(capsys):
 def test_no_command_prints_help(capsys):
     main([])
     out = capsys.readouterr().out
-    assert "sanitize" in out
+    assert "launch" in out
 
 
-def test_sanitize_parser_shape():
+def test_legacy_sanitize_subcommand_is_stripped():
+    """``pysanitize sanitize a.pdf …`` keeps working as an alias."""
+    args = build_parser().parse_args(["a.pdf", "--detector", "hybrid"])
+    legacy = build_parser().parse_args(
+        main.__globals__["_strip_legacy_subcommand"](["sanitize", "a.pdf", "--detector", "hybrid"])
+    )
+    assert legacy.file == args.file == "a.pdf"
+    assert legacy.detector == args.detector == "hybrid"
+
+
+def test_parser_shape():
     args = build_parser().parse_args(
-        ["sanitize", "a.pdf", "--detector", "hybrid", "--fields", "phone,person_name",
+        ["a.pdf", "--detector", "hybrid", "--fields", "phone,person_name",
          "--mask-images", "--image-backend", "yunet", "--audit", "--out-dir", "o"]
     )
-    assert args.command == "sanitize"
     assert args.file == "a.pdf"
     assert args.detector == "hybrid"
     assert args.mask_images is True
     assert args.image_backend == "yunet"
     assert args.audit is True
     assert args.out_dir == "o"
+    assert args.launch is None
 
 
-def test_sanitize_defaults_to_none_for_config():
-    args = build_parser().parse_args(["sanitize", "a.pdf"])
+def test_launch_flag_parsing():
+    assert build_parser().parse_args(["--launch", "tui"]).launch == "tui"
+    assert build_parser().parse_args(["--launch", "webui"]).launch == "webui"
+
+
+def test_defaults_to_none_for_config():
+    args = build_parser().parse_args(["a.pdf"])
     assert args.detector is None
     assert args.mask_images is None
     assert args.audit is None
     assert args.llm_provider is None
 
 
-def test_sanitize_provider_model_flags():
+def test_provider_model_flags():
     args = build_parser().parse_args(
-        ["sanitize", "a.pdf", "--provider", "pingan", "--model", "qwen3.6-27b"]
+        ["a.pdf", "--provider", "pingan", "--model", "qwen3.6-27b"]
     )
     assert args.llm_provider == "pingan"
     assert args.llm_model == "qwen3.6-27b"
+
+
+def test_launch_webui_reports_not_available(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as e:
+        main(["--launch", "webui"])
+    assert e.value.code == 1
+    assert "tui" in capsys.readouterr().err.lower()
 
 
 def test_sanitize_runs_pipeline(monkeypatch, capsys):

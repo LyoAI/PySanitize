@@ -13,7 +13,7 @@ from pathlib import Path
 
 import cv2
 
-from pysanitize.config import MODELS_DIR
+from pysanitize.config import MODELS_DIR, get_image_config
 from pysanitize.utils import get_logger
 
 from .base import DetectedObject, ImageDetector
@@ -24,6 +24,10 @@ YUET_MODEL_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
     "face_detection_yunet_2023mar.onnx"
 )
+
+
+def _image_cfg() -> dict:
+    return get_image_config()
 
 
 def _download(url: str, dest: Path, timeout: int = 30) -> bool:
@@ -46,14 +50,18 @@ class YuNetFaceDetector(ImageDetector):
     def __init__(
         self,
         model_path: str | Path | None = None,
-        score_threshold: float = 0.5,
+        score_threshold: float | None = None,
     ) -> None:
         self.model_path = Path(model_path) if model_path else (MODELS_DIR / "face_detection_yunet_2023mar.onnx")
-        self.score_threshold = score_threshold
+        self.score_threshold = (
+            float(_image_cfg().get("score_threshold", 0.5))
+            if score_threshold is None
+            else float(score_threshold)
+        )
         if not self.model_path.exists() and not _download(YUET_MODEL_URL, self.model_path):
             raise FileNotFoundError(f"YuNet model unavailable: {self.model_path}")
         self._detector = cv2.FaceDetectorYN_create(
-            str(self.model_path), "", (0, 0), score_threshold=score_threshold
+            str(self.model_path), "", (0, 0), score_threshold=self.score_threshold
         )
 
     def detect(self, image_path: Path) -> list[DetectedObject]:
@@ -81,11 +89,24 @@ class YuNetFaceDetector(ImageDetector):
 class HaarFaceDetector(ImageDetector):
     """OpenCV's bundled Haar cascade (offline-safe, no confidence)."""
 
-    def __init__(self, scale_factor: float = 1.1, min_neighbors: int = 5) -> None:
+    def __init__(
+        self,
+        scale_factor: float | None = None,
+        min_neighbors: int | None = None,
+    ) -> None:
         cascade = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         self._cascade = cv2.CascadeClassifier(cascade)
-        self.scale_factor = scale_factor
-        self.min_neighbors = min_neighbors
+        haar_cfg = _image_cfg().get("haar", {})
+        self.scale_factor = (
+            float(haar_cfg.get("scale_factor", 1.1))
+            if scale_factor is None
+            else float(scale_factor)
+        )
+        self.min_neighbors = (
+            int(haar_cfg.get("min_neighbors", 5))
+            if min_neighbors is None
+            else int(min_neighbors)
+        )
 
     def detect(self, image_path: Path) -> list[DetectedObject]:
         img = cv2.imread(str(image_path))
@@ -103,10 +124,13 @@ class HaarFaceDetector(ImageDetector):
 
 
 def build_face_detector(
-    backend: str = "auto", model_path: str | Path | None = None, score_threshold: float = 0.5
+    backend: str = "auto",
+    model_path: str | Path | None = None,
+    score_threshold: float | None = None,
 ) -> ImageDetector:
     """Pick a face detector: ``auto`` tries YuNet then Haar; ``yunet`` / ``haar``
-    force one. YOLO (``backend="yolo"``) lives in ``yolo.py``."""
+    force one. YOLO (``backend="yolo"``) lives in ``yolo.py``. ``score_threshold``
+    defaults to ``image.score_threshold`` from the pipeline config."""
     if backend in ("auto", "yunet"):
         try:
             det = YuNetFaceDetector(model_path, score_threshold)

@@ -14,15 +14,16 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pysanitize.config import MINERU_BACKEND, OUT_DIR, load_pipeline_config
+from pysanitize.config import (
+    MINERU_BACKEND,
+    OUT_DIR,
+    get_image_config,
+    get_output_config,
+    get_text_config,
+)
 from pysanitize.detector.base import Detection
 from pysanitize.detector.image import DetectedObject, build_detectors
-from pysanitize.detector.llm import (
-    CHUNK_SIZE,
-    DEFAULT_MODEL,
-    DEFAULT_PROVIDER,
-    LLMDetector,
-)
+from pysanitize.detector.llm import LLMDetector
 from pysanitize.detector.registry import DetectionRegistry
 from pysanitize.detector.rules import RuleDetector
 from pysanitize.detector.specs import MaskSpec, load_field_specs, select_specs
@@ -84,7 +85,7 @@ def sanitize_document(
 
     Args:
         doc_path: PDF / image / docx / pptx / xlsx file.
-        detector: ``rules`` (local regex+dictionary), ``llm`` (deepseek locates
+        detector: ``rules`` (local regex+dictionary), ``llm`` (llm locates
             spans), or ``hybrid`` (both, rules wins on ties).
         fields: restrict detection to these field types (default: all enabled).
         llm_provider: provider section in ``config/llm/<model>.yaml`` —
@@ -100,22 +101,17 @@ def sanitize_document(
         :class:`SanitizeResult` with paths to every artifact.
     """
     doc_path = Path(doc_path)
-    cfg = load_pipeline_config()
-    text_cfg = cfg.get("text", {})
-    image_cfg = cfg.get("image", {})
-    output_cfg = cfg.get("output", {})
+    text_cfg = get_text_config()
+    image_cfg = get_image_config()
+    output_cfg = get_output_config()
 
     detector = detector or text_cfg.get("detector", "rules")
     if detector not in DETECTOR_MODES:
         raise ValueError(f"detector must be one of {DETECTOR_MODES}, got {detector!r}")
-    llm_model = llm_model or text_cfg.get("model") or DEFAULT_MODEL
-    llm_provider = (
-        llm_provider
-        or text_cfg.get("provider")
-        or DEFAULT_PROVIDER
-    )
+    llm_model = llm_model or text_cfg.get("model")
+    llm_provider = llm_provider or text_cfg.get("provider")
     chunking_cfg = text_cfg.get("chunking", {})
-    chunk_size = int(chunking_cfg.get("chunk_size", CHUNK_SIZE))
+    chunk_size = int(chunking_cfg.get("chunk_size", 6000))
     title_level_limit = chunking_cfg.get("title_level_limit", "auto")
     verify_checksums = (
         text_cfg.get("verify_checksums", True)

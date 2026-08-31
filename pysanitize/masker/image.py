@@ -12,14 +12,24 @@ from pathlib import Path
 
 from PIL import Image
 
+from pysanitize.config import get_image_config
 from pysanitize.detector.image.base import DetectedObject
 from pysanitize.utils import get_logger
 
 logger = get_logger()
 
 
-def mosaic(img: Image.Image, boxes: list[DetectedObject], factor: int = 16) -> Image.Image:
+def _default_factor() -> int:
+    """Mosaic block size from the pipeline config (``image.mosaic_factor``)."""
+    return int(get_image_config().get("mosaic_factor", 16))
+
+
+def mosaic(
+    img: Image.Image, boxes: list[DetectedObject], factor: int | None = None
+) -> Image.Image:
     """Return a copy of ``img`` with each box's region pixelated."""
+    if factor is None:
+        factor = _default_factor()
     out = img.copy()
     width, height = out.size
     for box in boxes:
@@ -37,8 +47,8 @@ def mosaic(img: Image.Image, boxes: list[DetectedObject], factor: int = 16) -> I
 class ImageMasker:
     """Mosaics detected regions onto an image and saves the masked copy."""
 
-    def __init__(self, factor: int = 16):
-        self.factor = factor
+    def __init__(self, factor: int | None = None):
+        self.factor = _default_factor() if factor is None else factor
 
     def mask_file(
         self,

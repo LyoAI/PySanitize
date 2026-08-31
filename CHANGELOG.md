@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+Config centralized in YAML, prompts externalized, and an interactive TUI alongside the CLI.
+
+### Added
+
+- **Interactive TUI** (`--launch tui`, Textual, `--extra tui`): four tabs — Fields (checkbox-select from `config/fields.yaml`), Options (file/detector/LLM/image settings), Run (free-form requirements appended to the LLM prompt, live log), Results (per-field counts + output paths); runs the pipeline in a background worker via `pysanitize.core.run_sanitizer`, the shared frontend facade for the future WebUI
+- **`pysanitize/prompts/`**: LLM system/user prompts move out of `detector/llm.py` into `system.md` / `user.md` templates; `set_extra_requirements()` lets the TUI append custom requirements to the system prompt
+- **`pysanitize/core.py`**: `run_sanitizer()` facade wrapping `sanitize_document()` with `extra_requirements` injection
+
+### Changed
+
+- **`<file>` promoted to the top-level CLI command**: `pysanitize sample.pdf --detector hybrid`; the pre-0.3 `pysanitize sanitize sample.pdf` form keeps working as an alias; `--launch tui|webui` selects an interactive frontend
+- **All pipeline tunables centralized in `config/pipeline.yaml`** (`text.chunking.*`, `text.min/max_value_len`, `text.max_completion_tokens`, `image.mosaic_factor`, `image.haar/ocr/yolo.*`, …); Python modules keep only sentinel defaults resolved from config at call time — no scattered module-level constants
+- Removed the dead `utils/skill_loader.py`
+
+### Tests
+
+- 109 tests (from 89): config layer (`tests/test_config.py`), prompt templates (`tests/test_prompts.py`), TUI panes under Textual's Pilot harness (`tests/test_tui.py`), rewritten CLI parser tests
+
 ## [0.2.0] - 2026-08-24
 
 Image desensitization generalized from "faces only" to **class-driven**: the user

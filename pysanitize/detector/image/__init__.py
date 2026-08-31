@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pysanitize.config import get_image_config
 from pysanitize.utils import get_logger
 
 from .base import DetectedObject, ImageDetector
@@ -34,7 +35,7 @@ def build_detectors(
     *,
     backend: str = "auto",
     model_path: str | Path | None = None,
-    score_threshold: float = 0.5,
+    score_threshold: float | None = None,
 ) -> list[ImageDetector]:
     """Build the detectors for the requested classes (empty → []).
 
@@ -45,12 +46,15 @@ def build_detectors(
             ``haar``/``yolo``).
         model_path: detection weights — YuNet ONNX for ``face`` (non-yolo), a
             YOLO ``.pt`` for object classes / the yolo face model.
-        score_threshold: confidence cutoff passed to each detector.
+        score_threshold: confidence cutoff passed to each detector (default:
+            ``image.score_threshold`` from the pipeline config).
 
     Returns:
         A list of detectors to run per image. Detectors whose backend is not
         installed are skipped with a warning instead of failing the run.
     """
+    if score_threshold is None:
+        score_threshold = float(get_image_config().get("score_threshold", 0.5))
     classes = [c.strip() for c in (classes or []) if c and c.strip()]
     if not classes:
         return []

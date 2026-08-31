@@ -66,27 +66,28 @@ LLM_TIMEOUT_S=180         # 单次 LLM 请求超时（秒）
 ```bash
 uv sync --extra image-yolo      # YOLO 通用目标检测（ultralytics）
 uv sync --extra image-ocr       # OCR 文字区域检测（paddleocr，体积较大）
+uv sync --extra tui             # 交互式 TUI 前端（textual）
 ```
 
 ## 🚀 快速开始
 
 ```bash
 # 1) 纯本地规则检测（离线可用，不调用任何 LLM）
-uv run pysanitize sanitize 样例.pdf
+uv run pysanitize 样例.pdf
 
 # 2) 混合模式：规则 + LLM 定位（默认 openai/deepseek-v4-flash）
-uv run pysanitize sanitize 样例.pdf --detector hybrid
+uv run pysanitize 样例.pdf --detector hybrid
 
 #    指定 LLM 供应商与模型（与 finsearch-bench 一致）
-uv run pysanitize sanitize 样例.pdf --detector hybrid --provider pingan --model qwen3.6-27b
-uv run pysanitize sanitize 样例.pdf --detector llm     --provider openai  --model qwen3-max
+uv run pysanitize 样例.pdf --detector hybrid --provider pingan --model qwen3.6-27b
+uv run pysanitize 样例.pdf --detector llm     --provider openai  --model qwen3-max
 
 # 3) 图片打码：默认不检测任何图片，必须显式指定目标
-uv run pysanitize sanitize 样例.pdf --mask-images --image-classes face   # 人脸
-uv run pysanitize sanitize 样例.pdf --mask-images --image-classes text   # 印刷文字（公司名等，需 --extra image-ocr）
+uv run pysanitize 样例.pdf --mask-images --image-classes face   # 人脸
+uv run pysanitize 样例.pdf --mask-images --image-classes text   # 印刷文字（公司名等，需 --extra image-ocr）
 
 # 4) 限定字段 + 写出含原文的敏感审计报告（本地审计用，勿外发）
-uv run pysanitize sanitize 样例.xlsx --fields person_name,phone --audit
+uv run pysanitize 样例.xlsx --fields person_name,phone --audit
 ```
 
 每次运行产出一个任务目录（默认 `output/<文档名>/`）：
@@ -99,6 +100,15 @@ output/<文档名>/
 ```
 
 `--audit` 时额外生成 `sensitive_report.json`（含字段**原文**与字符偏移，用于本地人工复核，**不要外发**）。命令行未指定的参数全部回退到 `config/pipeline.yaml`；指定后命令行优先。
+
+## 🖥️ 交互式 TUI
+
+```bash
+uv sync --extra tui        # 一次性安装 Textual
+uv run pysanitize --launch tui
+```
+
+四页签终端界面（基于 Textual）：**① 字段** — 从 `config/fields.yaml` 勾选要检测的敏感字段类型；**② 选项** — 输入文件、检测模式、LLM 端点、图片打码；**③ 运行** — 自由输入自定义要求（会追加到 LLM 提示词），点击运行并实时查看日志；**④ 结果** — 各字段命中数与输出路径。命令行仍是主入口，TUI 只是同一流水线（`pysanitize.core.run_sanitizer`）之上的便捷层。
 
 ## 🐍 Python API
 
@@ -157,9 +167,9 @@ LLM 只做定位不重写，并有**幻觉硬防线**：value 在原文回匹配
 | 其它（`person`、`car`…） | YOLO 通用目标检测，按类别名过滤 | `--extra image-yolo` + `--image-model` |
 
 ```bash
-uv run pysanitize sanitize 合同.pdf --mask-images --image-classes face
-uv run pysanitize sanitize 合同.pdf --mask-images --image-classes text
-uv run pysanitize sanitize 合同.pdf --mask-images --image-classes person,car --image-model yolov8n.pt
+uv run pysanitize 合同.pdf --mask-images --image-classes face
+uv run pysanitize 合同.pdf --mask-images --image-classes text
+uv run pysanitize 合同.pdf --mask-images --image-classes person,car --image-model yolov8n.pt
 ```
 
 马赛克为 NEAREST 分块（默认块 16px），只覆盖检测框内区域，框外原样保留。
@@ -169,7 +179,7 @@ uv run pysanitize sanitize 合同.pdf --mask-images --image-classes person,car -
 `--model` = `config/llm/<model>.yaml` 的文件名；`--provider` = 该 yaml 里的 **provider 段**（`openai:` / `pingan:`）。一个 yaml 可同时放多段，内网/外网切换只改 flag：
 
 ```bash
-uv run pysanitize sanitize 合同.pdf --detector hybrid --provider pingan --model qwen3.6-27b
+uv run pysanitize 合同.pdf --detector hybrid --provider pingan --model qwen3.6-27b
 ```
 
 - `api_key` 一律用 `${ENV_VAR}` 占位，运行时从环境展开——**明文 key 永不入库**
@@ -200,7 +210,7 @@ pysanitize/
 ├── cli.py      argparse CLI
 ├── llm/        LLM 门面（openai / pingan 多 provider）
 └── report.py   audit.json / sensitive_report.json
-config/         本地覆盖（git 忽略，可选）：fields.yaml（字段规格）/ pipeline.yaml（阶段开关）/ llm/*.yaml（模型配置）；缺省用内置默认
+config/         本地覆盖（git 忽略，可选）：fields.yaml（字段规格）/ pipeline.yaml（全部流水线可调参数）/ llm/*.yaml（模型配置）；缺省用内置默认
 ```
 
 扩展点：**加字段→改 fields.yaml；加检测器→写一个类进 registry；加图片目标→写一个类进 `build_detectors` 路由；加输出格式→M2 加 renderer/**。接口都只有一个方法，不碰主干。

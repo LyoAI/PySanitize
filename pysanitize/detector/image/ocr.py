@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pysanitize.config import get_image_config
 from pysanitize.utils import get_logger
 
 from .base import DetectedObject, ImageDetector
@@ -25,17 +26,26 @@ class OCRTextDetector(ImageDetector):
     """Detects text regions in an image with PaddleOCR.
 
     Args:
-        lang: OCR language (``"ch"`` handles Chinese + Latin).
-        confidence: drop lines whose per-line score is below this.
+        lang: OCR language (``"ch"`` handles Chinese + Latin; default:
+            ``image.ocr.lang`` from the pipeline config).
+        confidence: drop lines whose per-line score is below this (default:
+            ``image.ocr.confidence``).
     """
 
-    def __init__(self, lang: str = "ch", confidence: float = 0.5):
+    def __init__(self, lang: str | None = None, confidence: float | None = None):
         try:
             from paddleocr import PaddleOCR
         except ImportError:
             raise RuntimeError(
                 "paddleocr not installed; run `uv sync --extra image-ocr`"
             ) from None
+        ocr_cfg = get_image_config().get("ocr", {})
+        lang = lang or str(ocr_cfg.get("lang", "ch"))
+        self.confidence = (
+            float(ocr_cfg.get("confidence", 0.5))
+            if confidence is None
+            else float(confidence)
+        )
         # 3.x constructor args; older versions ignore unknown ones only if not
         # passed — keep the common subset.
         self._ocr = PaddleOCR(
@@ -44,7 +54,6 @@ class OCRTextDetector(ImageDetector):
             use_textline_orientation=False,
             lang=lang,
         )
-        self.confidence = confidence
 
     def detect(self, image_path: Path) -> list[DetectedObject]:
         result = self._ocr.ocr(str(image_path))

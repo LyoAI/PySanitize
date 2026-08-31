@@ -69,27 +69,28 @@ Optional features, unlock on demand:
 ```bash
 uv sync --extra image-yolo      # YOLO general object detection (ultralytics)
 uv sync --extra image-ocr       # OCR text-region detection (paddleocr, large)
+uv sync --extra tui             # interactive TUI frontend (textual)
 ```
 
 ## 🚀 Quick start
 
 ```bash
 # 1) Pure local rules detection (offline, no LLM)
-uv run pysanitize sanitize sample.pdf
+uv run pysanitize sample.pdf
 
 # 2) Hybrid: rules + LLM locating (default openai/deepseek-v4-flash)
-uv run pysanitize sanitize sample.pdf --detector hybrid
+uv run pysanitize sample.pdf --detector hybrid
 
 #    pick the LLM provider + model (finsearch-bench style)
-uv run pysanitize sanitize sample.pdf --detector hybrid --provider pingan --model qwen3.6-27b
-uv run pysanitize sanitize sample.pdf --detector llm     --provider openai  --model qwen3-max
+uv run pysanitize sample.pdf --detector hybrid --provider pingan --model qwen3.6-27b
+uv run pysanitize sample.pdf --detector llm     --provider openai  --model qwen3-max
 
 # 3) Image masking: no image is detected by default — name your targets explicitly
-uv run pysanitize sanitize sample.pdf --mask-images --image-classes face   # faces
-uv run pysanitize sanitize sample.pdf --mask-images --image-classes text   # printed text (needs --extra image-ocr)
+uv run pysanitize sample.pdf --mask-images --image-classes face   # faces
+uv run pysanitize sample.pdf --mask-images --image-classes text   # printed text (needs --extra image-ocr)
 
 # 4) Restrict fields + write a raw-value audit report (local review only, do not share)
-uv run pysanitize sanitize sample.xlsx --fields person_name,phone --audit
+uv run pysanitize sample.xlsx --fields person_name,phone --audit
 ```
 
 Each run produces a job directory (default `output/<doc-name>/`):
@@ -102,6 +103,15 @@ output/<doc-name>/
 ```
 
 With `--audit`, an extra `sensitive_report.json` is written (raw values + char offsets, for local review — **do not share**). Any flag you don't pass falls back to `config/pipeline.yaml`; explicit flags win.
+
+## 🖥️ Interactive TUI
+
+```bash
+uv sync --extra tui        # one-time: installs Textual
+uv run pysanitize --launch tui
+```
+
+A four-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, image masking; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths. The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
 
 ## 🐍 Python API
 
@@ -160,9 +170,9 @@ Images aren't only faces — they can hold company names, seals, screenshots of 
 | other (`person`, `car`…) | YOLO general object detection, filtered by class name | `--extra image-yolo` + `--image-model` |
 
 ```bash
-uv run pysanitize sanitize contract.pdf --mask-images --image-classes face
-uv run pysanitize sanitize contract.pdf --mask-images --image-classes text
-uv run pysanitize sanitize contract.pdf --mask-images --image-classes person,car --image-model yolov8n.pt
+uv run pysanitize contract.pdf --mask-images --image-classes face
+uv run pysanitize contract.pdf --mask-images --image-classes text
+uv run pysanitize contract.pdf --mask-images --image-classes person,car --image-model yolov8n.pt
 ```
 
 The mosaic is a NEAREST block mosaic (default 16px) that covers only the detected boxes — everything outside is preserved.
@@ -172,7 +182,7 @@ The mosaic is a NEAREST block mosaic (default 16px) that covers only the detecte
 `--model` = filename of `config/llm/<model>.yaml`; `--provider` = a **provider section** in that yaml (`openai:` / `pingan:`). One yaml can hold several sections, so switching intranet/extranet is just a flag change:
 
 ```bash
-uv run pysanitize sanitize contract.pdf --detector hybrid --provider pingan --model qwen3.6-27b
+uv run pysanitize contract.pdf --detector hybrid --provider pingan --model qwen3.6-27b
 ```
 
 - `api_key` always uses a `${ENV_VAR}` placeholder, expanded from the environment at runtime — **plaintext keys never enter the repo**
@@ -203,7 +213,7 @@ pysanitize/
 ├── cli.py      argparse CLI
 ├── llm/        LLM facade (openai / pingan providers)
 └── report.py   audit.json / sensitive_report.json
-config/         local overrides (git-ignored, optional): fields.yaml (field specs) / pipeline.yaml (stage switches) / llm/*.yaml (model config); built-in defaults apply without it
+config/         local overrides (git-ignored, optional): fields.yaml (field specs) / pipeline.yaml (all pipeline tunables) / llm/*.yaml (model config); built-in defaults apply without it
 ```
 
 Extension points: **add a field** → edit `fields.yaml`; **add a detector** → write a class into the registry; **add an image target** → write a class into the `build_detectors` route; **add an output format** → add a renderer in M2. Every interface has a single method; nothing touches the core.
