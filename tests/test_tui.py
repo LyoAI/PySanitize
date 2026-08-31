@@ -62,3 +62,42 @@ def test_run_pane_ignores_placeholder_requirements():
             assert run_pane.requirements() is None  # only the "#" placeholder
 
     _run(_test())
+
+
+def test_quit_button_exits_cleanly():
+    async def _test():
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            await pilot.click("#quit-btn")
+            await pilot.pause()  # let the Button.Pressed message reach its handler
+        assert app.return_code == 0  # set once the app has shut down
+
+    _run(_test())
+
+
+def test_ctrl_c_quits():
+    """ctrl+c must quit — several terminals swallow Textual's default ctrl+q."""
+    async def _test():
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+c")
+        assert app.return_code == 0
+
+    _run(_test())
+
+
+def test_file_browser_escape_cancels():
+    async def _test():
+        from pysanitize.tui.app import _FileBrowser
+
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            app._browse()
+            await pilot.pause()
+            assert isinstance(app.screen, _FileBrowser)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, _FileBrowser)
+            assert app.options_pane.file_path() is None  # cancelled, nothing picked
+
+    _run(_test())

@@ -108,7 +108,7 @@ uv sync --extra tui        # 一次性安装 Textual
 uv run pysanitize --launch tui
 ```
 
-四页签终端界面（基于 Textual）：**① 字段** — 从 `config/fields.yaml` 勾选要检测的敏感字段类型；**② 选项** — 输入文件、检测模式、LLM 端点、图片打码；**③ 运行** — 自由输入自定义要求（会追加到 LLM 提示词），点击运行并实时查看日志；**④ 结果** — 各字段命中数与输出路径。命令行仍是主入口，TUI 只是同一流水线（`pysanitize.core.run_sanitizer`）之上的便捷层。
+四页签终端界面（基于 Textual）：**① 字段** — 从 `config/fields.yaml` 勾选要检测的敏感字段类型；**② 选项** — 输入文件、检测模式、LLM 端点、图片打码；**③ 运行** — 自由输入自定义要求（会追加到 LLM 提示词），点击运行并实时查看日志；**④ 结果** — 各字段命中数与输出路径。退出：点击右上角 **✕ Quit** 按钮或按 `ctrl+c`（默认的 `ctrl+q` 会被部分终端吞掉，mac 的 `cmd+q` 则属于系统）。命令行仍是主入口，TUI 只是同一流水线（`pysanitize.core.run_sanitizer`）之上的便捷层。
 
 ## 🐍 Python API
 

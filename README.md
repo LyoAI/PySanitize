@@ -111,7 +111,7 @@ uv sync --extra tui        # one-time: installs Textual
 uv run pysanitize --launch tui
 ```
 
-A four-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, image masking; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths. The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
+A four-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, image masking; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths. Quit with the ✕ button or `ctrl+c` (the default `ctrl+q` is swallowed by some terminals, and `cmd+q` belongs to macOS). The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
 
 ## 🐍 Python API
 

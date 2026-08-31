@@ -6,7 +6,7 @@ Config centralized in YAML, prompts externalized, and an interactive TUI alongsi
 
 ### Added
 
-- **Interactive TUI** (`--launch tui`, Textual, `--extra tui`): four tabs — Fields (checkbox-select from `config/fields.yaml`), Options (file/detector/LLM/image settings), Run (free-form requirements appended to the LLM prompt, live log), Results (per-field counts + output paths); runs the pipeline in a background worker via `pysanitize.core.run_sanitizer`, the shared frontend facade for the future WebUI
+- **Interactive TUI** (`--launch tui`, Textual, `--extra tui`): four tabs — Fields (checkbox-select from `config/fields.yaml`), Options (file/detector/LLM/image settings), Run (free-form requirements appended to the LLM prompt, live log), Results (per-field counts + output paths); runs the pipeline in a background worker via `pysanitize.core.run_sanitizer`, the shared frontend facade for the future WebUI. Quits via a visible ✕ button or `ctrl+c` (terminals commonly swallow the default `ctrl+q`); the file picker gains a Cancel button and `esc`
 - **`pysanitize/prompts/`**: LLM system/user prompts move out of `detector/llm.py` into `system.md` / `user.md` templates; `set_extra_requirements()` lets the TUI append custom requirements to the system prompt
 - **`pysanitize/core.py`**: `run_sanitizer()` facade wrapping `sanitize_document()` with `extra_requirements` injection
 

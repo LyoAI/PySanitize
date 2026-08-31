@@ -14,6 +14,8 @@ from typing import Any
 
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, DirectoryTree, Footer, Header, Input, TabbedContent, TabPane
 
@@ -27,7 +29,9 @@ _PANE = {"fields": "tab-fields", "options": "tab-options", "run": "tab-run", "re
 
 
 class _FileBrowser(ModalScreen[Path | None]):
-    """Minimal modal file picker (DirectoryTree); dismisses with the pick."""
+    """Minimal modal file picker (DirectoryTree); dismisses with the pick or Cancel."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, start: Path) -> None:
         super().__init__()
@@ -35,9 +39,18 @@ class _FileBrowser(ModalScreen[Path | None]):
 
     def compose(self) -> ComposeResult:
         yield DirectoryTree(str(self._start), id="tree")
+        with Horizontal(classes="button-row"):
+            yield Button("Cancel", id="browse-cancel")
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         self.dismiss(Path(event.path))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#browse-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
 
 
 class PySanitizeApp(App[None]):
@@ -45,6 +58,13 @@ class PySanitizeApp(App[None]):
 
     TITLE = f"🛡️ PySanitize {__version__}"
     SUB_TITLE = "document desensitization"
+
+    BINDINGS = [
+        # Textual's default quit is ctrl+q, which several terminals swallow
+        # (macOS flow control / VS Code). ctrl+c quits here — except inside
+        # Input/TextArea, where the widget's own copy binding wins.
+        Binding("ctrl+c", "quit", "Quit"),
+    ]
 
     CSS = """
     #tabs { height: 1fr; }
@@ -56,6 +76,8 @@ class PySanitizeApp(App[None]):
     .button-row { height: 3; margin-top: 1; }
     .button-row Button { margin-right: 1; }
     .hint { color: $text-muted; margin-top: 1; }
+    #action-bar { height: auto; align-horizontal: right; }
+    #quit-btn { margin-right: 1; }
     #requirements { height: 6; border: round $primary; }
     #run-log { height: 1fr; border: round $primary; margin-top: 1; }
     #field-list { height: auto; max-height: 60vh; border: round $primary; }
@@ -64,6 +86,8 @@ class PySanitizeApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        with Horizontal(id="action-bar"):
+            yield Button("✕ Quit", id="quit-btn", variant="error")
         with TabbedContent(id="tabs"):
             with TabPane("① Fields", id="tab-fields"):
                 yield FieldsPane()
@@ -139,6 +163,12 @@ class PySanitizeApp(App[None]):
         self.results_pane.show(result)
         self._log(f"✓ done in {result.duration_s:.1f}s → {result.out_dir}")
         self._switch("results")
+
+    # -- quit ---------------------------------------------------------------------
+
+    @on(Button.Pressed, "#quit-btn")
+    def _quit(self) -> None:
+        self.exit()
 
     # -- small helpers -----------------------------------------------------------
 
