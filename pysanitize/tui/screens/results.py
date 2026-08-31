@@ -1,4 +1,4 @@
-"""④ Results tab: post-run summary (counts, images, artifacts)."""
+"""⑤ Results tab: post-run summary (counts, images, artifacts)."""
 
 from __future__ import annotations
 
@@ -27,6 +27,11 @@ class ResultsPane(VerticalScroll):
             if result.sensitive_report_path
             else "audit.json (masked summary)"
         )
+        redacted = (
+            f"  redacted.pdf\n"
+            if result.redacted_pdf
+            else ""
+        )
         self.query_one("#results-body", Static).update(
             f"[b]Document[/b]  {result.doc_id}\n"
             f"[b]Detector[/b]  {result.detector}   "
@@ -36,5 +41,6 @@ class ResultsPane(VerticalScroll):
             f"[b]Images[/b]  {result.images_masked}/{result.images_total} mosaiced\n\n"
             f"[b]Output[/b]  {result.out_dir}\n"
             f"  sanitized.md\n"
+            f"{redacted}"
             f"  {audit}"
         )

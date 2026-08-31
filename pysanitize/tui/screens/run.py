@@ -1,4 +1,4 @@
-"""③ Run tab: custom LLM requirements, the run button, live progress log."""
+"""④ Run tab: custom LLM requirements, the run button, live progress log."""
 
 from __future__ import annotations
 

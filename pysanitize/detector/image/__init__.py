@@ -84,6 +84,26 @@ def build_detectors(
     return detectors
 
 
+def build_ocr_field_detector(
+    specs,
+    *,
+    verify_checksums: bool = True,
+) -> ImageDetector | None:
+    """Build the OCR field detector for ``image.fields`` (None when unavailable).
+
+    The detector OCRs each image and re-runs the *text* field rules over the
+    recognized text, so only spans matching the configured fields are mosaiced.
+    Missing paddleocr degrades to a warning, never a hard failure.
+    """
+    try:
+        from .ocr import OCRFieldDetector
+
+        return OCRFieldDetector(specs=specs, verify_checksums=verify_checksums)
+    except Exception as e:
+        logger.warning("image field detection unavailable (%s); skipping", e)
+        return None
+
+
 def _build_yolo(model_path, classes: list[str], confidence: float) -> ImageDetector:
     from .yolo import YOLODetector  # lazy: only if ultralytics is installed
 
@@ -99,4 +119,5 @@ __all__ = [
     "ImageDetector",
     "build_detectors",
     "build_face_detector",
+    "build_ocr_field_detector",
 ]

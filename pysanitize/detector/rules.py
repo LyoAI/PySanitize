@@ -148,8 +148,11 @@ _COMPANY_SUFFIX_RE = re.compile(
 # 贵 is *not* here — "贵州…" / "贵阳…" are legitimate company-name starts.
 _COMPANY_PREFIX_BLACKLIST = ("本", "该", "某", "我", "你", "此", "这", "那", "其")
 
-_BOUNDARY_CHARS = " \t\n\r，。；！？、：:""''（）()[]{}〈〉《》·-—…,;!?"
-_BOUNDARY_RE = re.compile(f"[{re.escape(_BOUNDARY_CHARS)}]")
+# Written as ONE string with explicit escapes: an earlier version had its
+# curly quotes mangled to ASCII, which Python silently read as implicit string
+# concatenation — the boundary set then lost “”‘’ and " entirely, so company
+# names inside Chinese quotes were never detected.
+_BOUNDARY_CHARS = " \t\n\r，。；！？、：:\"“”‘’'（）()[]{}〈〉《》·-—…,;!?"
 
 # Max chars to backtrack from a company suffix to the name start.
 _COMPANY_MAX_BACK = 36

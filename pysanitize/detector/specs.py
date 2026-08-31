@@ -33,11 +33,15 @@ class MaskSpec:
         """Return the replacement string for ``value``."""
         if self.template:
             return self.template
-        keep = len(value) - self.keep_head - self.keep_tail
+        if len(value) <= self.keep_head + self.keep_tail:
+            # head+tail would expose the whole value — never emit it unmasked.
+            # Keep up to ``keep_head`` chars, masking at least one char.
+            keep = min(self.keep_head, max(0, len(value) - 1))
+            return value[:keep] + self.mask_char * (len(value) - keep)
         return (
             value[: self.keep_head]
-            + self.mask_char * max(0, keep)
-            + (value[-self.keep_tail:] if self.keep_tail else "")
+            + self.mask_char * (len(value) - self.keep_head - self.keep_tail)
+            + value[-self.keep_tail:]
         )
 
 

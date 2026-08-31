@@ -78,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--image-fields",
+        help=(
+            "field types to detect *inside* images, comma-separated (e.g. phone,company_name). "
+            "Default = same as --fields; may be a superset"
+        ),
+    )
+    parser.add_argument(
         "--image-backend", choices=("auto", "yunet", "haar", "yolo"),
         help="face backend when classes include face (default auto: YuNet, offline fallback Haar)",
     )
@@ -89,6 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also write sensitive_report.json with raw values (local audit)")
     ga.add_argument("--no-audit", dest="audit", action="store_false")
     parser.set_defaults(audit=None)
+    rg = parser.add_mutually_exclusive_group()
+    rg.add_argument("--redact-pdf", dest="redact_pdf", action="store_true",
+                    help="write redacted.pdf for PDF inputs (default from config)")
+    rg.add_argument("--no-redact-pdf", dest="redact_pdf", action="store_false",
+                    help="skip redacted.pdf")
+    parser.set_defaults(redact_pdf=None)
+    parser.add_argument(
+        "--redaction-style", choices=("mosaic", "block"),
+        help="PDF redaction style (default mosaic)",
+    )
     parser.add_argument("--out-dir", help="output directory (default output/<doc-name>/)")
     parser.add_argument("--parse-backend", help="MinerU backend (pipeline/vlm-engine/hybrid-engine)")
     parser.add_argument("--lang", default="ch", help="OCR language (default ch)")
@@ -140,10 +157,13 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         llm_provider=args.llm_provider,
         mask_images=args.mask_images,
         image_classes=_split_fields(args.image_classes),
+        image_fields=_split_fields(args.image_fields),
         image_backend=args.image_backend,
         image_model_path=args.image_model,
         mosaic_factor=args.mosaic_factor,
         score_threshold=args.score_threshold,
+        redact_pdf=args.redact_pdf,
+        redaction_style=args.redaction_style,
         audit=args.audit,
         out_dir=args.out_dir,
         parse_backend=args.parse_backend,
@@ -155,6 +175,8 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         f"  Text masks {len(result.detections)} · images mosaiced "
         f"{result.images_masked}/{result.images_total} · took {result.duration_s:.1f}s"
     )
+    if result.redacted_pdf:
+        print(f"  Redacted PDF: {result.redacted_pdf}")
     print(f"  Audit report: {result.audit_path}")
     if result.sensitive_report_path:
         print(f"  Sensitive-value report: {result.sensitive_report_path}")

@@ -209,3 +209,141 @@ def test_hybrid_uses_both_detectors(make_doc, monkeypatch, tmp_path):
     r = pl.sanitize_document("doc.pdf", detector="hybrid", out_dir=tmp_path / "out")
     md = r.sanitized_md.read_text(encoding="utf-8")
     assert "138****5678" in md and "***" in md
+
+
+# ---- PDF redaction -----------------------------------------------------------
+
+
+def _write_phone_pdf(path):
+    import pymupdf
+    from pysanitize.parser.blocks import BBox
+
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=595, height=842)
+    page.insert_text((72, 100), "13812345678", fontsize=12, fontname="china-s")
+    pdf.save(path)
+    return BBox(*pymupdf.open(path)[0].search_for("13812345678")[0])
+
+
+def test_pdf_input_produces_redacted_pdf(make_doc, monkeypatch, tmp_path):
+    import pymupdf
+    from pysanitize.parser.blocks import LineBox
+
+    src = tmp_path / "doc.pdf"
+    box = _write_phone_pdf(src)
+    doc = make_doc([("paragraph", "13812345678", 1)])
+    doc.page_dimensions = [(595.0, 842.0)]
+    doc.blocks[0].line_boxes = [LineBox("13812345678", box, 0, 11)]
+    _patch_parse(monkeypatch, doc)
+
+    r = pl.sanitize_document(src, detector="rules", out_dir=tmp_path / "out")
+    assert r.redacted_pdf is not None and r.redacted_pdf.name == "redacted.pdf"
+    assert r.redacted_pdf.exists()
+    text = "\n".join(p.get_text() for p in pymupdf.open(r.redacted_pdf))
+    assert "13812345678" not in text  # true glyph removal, not a painted-over copy
+
+    audit = json.loads(r.audit_path.read_text(encoding="utf-8"))
+    assert audit["redaction"]["pdf"] == "redacted.pdf"
+    assert audit["redaction"]["pages"] == 1
+    assert audit["redaction"]["regions"] == 1
+
+
+def test_pdf_input_no_redact_pdf_flag_skips(make_doc, monkeypatch, tmp_path):
+    src = tmp_path / "doc.pdf"
+    _write_phone_pdf(src)
+    doc = make_doc([("paragraph", "13812345678", 1)])
+    _patch_parse(monkeypatch, doc)
+    r = pl.sanitize_document(
+        src, detector="rules", redact_pdf=False, out_dir=tmp_path / "out"
+    )
+    assert r.redacted_pdf is None
+    assert not (r.out_dir / "redacted.pdf").exists()
+
+
+def test_docx_input_skips_redacted_pdf(make_doc, monkeypatch, tmp_path):
+    doc = make_doc([("paragraph", "电话 13812345678", 1)], suffix=".docx")
+    _patch_parse(monkeypatch, doc)
+    r = pl.sanitize_document("doc.docx", detector="rules", out_dir=tmp_path / "out")
+    assert r.redacted_pdf is None
+    audit = json.loads(r.audit_path.read_text(encoding="utf-8"))
+    assert audit["redaction"]["pdf"] is None
+
+
+def test_invalid_redaction_style_raises(make_doc, monkeypatch, tmp_path):
+    src = tmp_path / "doc.pdf"
+    _write_phone_pdf(src)
+    doc = make_doc([("paragraph", "13812345678", 1)])
+    doc.page_dimensions = [(595.0, 842.0)]
+    _patch_parse(monkeypatch, doc)
+    import pytest
+
+    with pytest.raises(ValueError, match="redaction_style"):
+        pl.sanitize_document(src, detector="rules", redaction_style="blur",
+                             out_dir=tmp_path / "out")
+
+
+# ---- image.fields ------------------------------------------------------------
+
+
+def _doc_with_image(make_doc, tmp_path):
+    from PIL import Image
+
+    img_dir = tmp_path / "md" / "doc" / "images"
+    img_dir.mkdir(parents=True)
+    img = img_dir / "aabb.jpg"
+    Image.fromarray(np.full((80, 60, 3), 200, dtype=np.uint8)).save(img)
+    doc = make_doc([("paragraph", "正文", 1)], out_dir=tmp_path / "md")
+    doc.images = [type("EI", (), {"path": img, "page": 1, "bbox": None})()]
+    return doc
+
+
+def test_image_fields_default_to_text_fields(make_doc, monkeypatch, tmp_path):
+    doc = _doc_with_image(make_doc, tmp_path)
+    _patch_parse(monkeypatch, doc)
+    seen = {}
+
+    def fake_builder(specs, *, verify_checksums=True):
+        seen["fields"] = sorted(specs)
+        return None
+
+    monkeypatch.setattr(pl, "build_ocr_field_detector", fake_builder)
+    pl.sanitize_document(
+        "doc.pdf", detector="rules", mask_images=True, fields=["phone"],
+        out_dir=tmp_path / "out",
+    )
+    assert seen["fields"] == ["phone"]  # config image.fields=null → follow text fields
+
+
+def test_image_fields_can_be_superset(make_doc, monkeypatch, tmp_path):
+    doc = _doc_with_image(make_doc, tmp_path)
+    _patch_parse(monkeypatch, doc)
+    seen = {}
+
+    def fake_builder(specs, *, verify_checksums=True):
+        seen["fields"] = sorted(specs)
+        return None
+
+    monkeypatch.setattr(pl, "build_ocr_field_detector", fake_builder)
+    pl.sanitize_document(
+        "doc.pdf", detector="rules", mask_images=True,
+        fields=["phone"], image_fields=["phone", "company_name"],
+        out_dir=tmp_path / "out",
+    )
+    assert seen["fields"] == ["company_name", "phone"]
+
+
+def test_image_fields_empty_disables_field_detection(make_doc, monkeypatch, tmp_path):
+    doc = _doc_with_image(make_doc, tmp_path)
+    _patch_parse(monkeypatch, doc)
+    seen = {"called": False}
+
+    def fake_builder(specs, *, verify_checksums=True):
+        seen["called"] = True
+        return None
+
+    monkeypatch.setattr(pl, "build_ocr_field_detector", fake_builder)
+    pl.sanitize_document(
+        "doc.pdf", detector="rules", mask_images=True, image_fields=[],
+        out_dir=tmp_path / "out",
+    )
+    assert not seen["called"]  # explicit [] → no field-driven image masking

@@ -77,6 +77,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     "image": {
         "enabled": False,
         "classes": [],
+        "fields": None,  # None = follow the text field set; a list is explicit
         "detector": "auto",
         "score_threshold": 0.5,
         "mosaic_factor": 16,
@@ -87,6 +88,8 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "output": {
         "audit": False,
+        "redact_pdf": True,       # PDF inputs also produce redacted.pdf
+        "redaction_style": "mosaic",  # mosaic (pixelated) | block (solid box)
     },
 }
 

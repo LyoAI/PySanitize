@@ -41,5 +41,10 @@ def detach_log_handler(handler: TuiLogHandler) -> None:
 
 
 def shape_params(raw: dict[str, Any]) -> dict[str, Any]:
-    """Drop empty/None values so pipeline-config defaults apply untouched."""
-    return {k: v for k, v in raw.items() if v not in (None, "", [])}
+    """Drop None/blank values so pipeline-config defaults apply untouched.
+
+    Empty *lists* are kept — e.g. an explicit ``image_fields=[]`` from the
+    Image tab means "no image field detection", which must not fall back to the
+    text-field default.
+    """
+    return {k: v for k, v in raw.items() if v is not None and v != ""}

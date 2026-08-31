@@ -71,3 +71,14 @@ def test_no_leak_end_to_end():
     assert "张三" not in out
     assert "13812345678" not in out
     assert "北京某某科技有限公司" not in out
+
+
+def test_short_value_never_emitted_unmasked():
+    # keep_head+keep_tail can cover a short value entirely (e.g. a 7-digit
+    # hotline with keep 3+4); the mask must still hide something.
+    assert SPECS["phone"].mask("9555526") == "955****"
+    # a value shorter than keep_head still masks at least one char
+    assert SPECS["phone"].mask("12") == "1*"
+    assert SPECS["phone"].mask("9") == "*"
+    # the normal long-value mask is unchanged
+    assert SPECS["phone"].mask("13812345678") == "138****5678"

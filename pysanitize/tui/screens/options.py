@@ -37,22 +37,6 @@ class OptionsPane(VerticalScroll):
             yield Label("Provider")
             yield Input(placeholder="openai", id="llm-provider")
 
-        yield Static("Image masking", classes="pane-title")
-        with Horizontal(classes="field-row"):
-            yield Label("Enable")
-            yield Switch(id="mask-images")
-        with Horizontal(classes="field-row"):
-            yield Label("Classes")
-            yield Input(placeholder="face, text, person, …", id="image-classes")
-        with Horizontal(classes="field-row"):
-            yield Label("Face backend")
-            yield Select(
-                options=[("auto", "auto"), ("yunet", "yunet"), ("haar", "haar"), ("yolo", "yolo")],
-                value="auto",
-                id="image-backend",
-                allow_blank=False,
-            )
-
         yield Static("Output", classes="pane-title")
         with Horizontal(classes="field-row"):
             yield Label("Audit report")
@@ -73,9 +57,6 @@ class OptionsPane(VerticalScroll):
             "detector": self._radio(self.query_one("#detector-mode", RadioSet)),
             "llm_model": self.query_one("#llm-model", Input).value.strip(),
             "llm_provider": self.query_one("#llm-provider", Input).value.strip(),
-            "mask_images": self.query_one("#mask-images", Switch).value or None,
-            "image_classes": self.query_one("#image-classes", Input).value.strip(),
-            "image_backend": self.query_one("#image-backend", Select).value,
             "audit": self.query_one("#audit", Switch).value or None,
             "out_dir": self.query_one("#out-dir", Input).value.strip(),
         }

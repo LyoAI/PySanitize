@@ -99,6 +99,14 @@ def test_company_name(make_doc):
     assert d.masked_value == "****"
 
 
+def test_company_name_inside_curly_quotes(make_doc):
+    """Regression: “” must be boundary chars — a mangled string literal once
+    dropped them, silently missing companies wrapped in Chinese quotes."""
+    doc = make_doc([("paragraph", "甲方为“北京某某科技有限公司”，乙方为张三。", 1)])
+    d = _by_type(doc)["company_name"]
+    assert d.value == "北京某某科技有限公司"
+
+
 def test_company_industry_noise_rejected(make_doc):
     # industry nouns like 银行/证券 only count when followed by a company tail
     for noise in ("银行业", "保险产品", "网上银行", "银行卡号", "全资子公司"):

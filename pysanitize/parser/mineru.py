@@ -3,8 +3,9 @@
 Ported from ``finsearch/tools/parser/mineru_parse.py`` (FinSearch-Bench). The
 CLI is invoked via ``subprocess`` — the CLI starts a throwaway local server, so
 parsing is fully local, no external API. Only the files MinerU leaves on disk
-are consumed (``<stem>_content_list_v2.json``), so the same output is reusable
-across machines regardless of how MinerU itself was run.
+are consumed: ``<stem>_middle.json`` (primary, with per-line geometry) and
+``<stem>_content_list_v2.json`` (table cell text + fallback), so the same
+output is reusable across machines regardless of how MinerU itself was run.
 """
 
 from __future__ import annotations
@@ -17,12 +18,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lxml import html as lxml_html
-
 from pysanitize.config import MINERU_BACKEND
 from pysanitize.utils import get_logger
 
-from .blocks import Block, ExtractedImage
+from .blocks import Block, ExtractedImage, html_table_to_markdown
+from .middle import load_middle, project_middle
 
 logger = get_logger()
 
@@ -58,14 +58,22 @@ def parse_blocks(
     backend: str = MINERU_BACKEND,
     lang: str = "ch",
     skip_existing: bool = True,
-) -> list[Block]:
-    """Parse one document into a reading-ordered ``Block`` list.
+) -> tuple[list[Block], list[tuple[float, float]] | None]:
+    """Parse one document into a reading-ordered ``Block`` list + page sizes.
 
-    Already-parsed files are reused (``skip_existing``), so re-runs are cheap.
+    Primary source is ``<stem>_middle.json`` (per-line geometry for the PDF
+    redactor); ``content_list_v2`` is still loaded for table cell text (middle
+    3.x tables carry none) and as a fallback for backends that emit no
+    ``pdf_info``. Already-parsed files are reused (``skip_existing``), so
+    re-runs are cheap.
+
+    Returns ``(blocks, page_dimensions)`` — page_dimensions is ``[(w, h), ...]``
+    per page (None when the document carries no geometry: office inputs, the
+    v2-only fallback).
 
     Raises:
         ValueError: unsupported document type (e.g. legacy ``.doc``).
-        RuntimeError: MinerU failed or produced no content_list JSON.
+        RuntimeError: MinerU failed or produced no parse output.
     """
     if not doc.is_file():
         raise FileNotFoundError(f"no such document: {doc}")
@@ -77,18 +85,36 @@ def parse_blocks(
         )
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    middle = load_middle(doc, out_dir)
     v2 = _locate_content_list(doc, out_dir)
-    if v2 is None or not skip_existing:
+    if (middle is None and v2 is None) or not skip_existing:
         _run_mineru(doc, out_dir, backend=backend, lang=lang)
+        middle = load_middle(doc, out_dir)
         v2 = _locate_content_list(doc, out_dir)
-        if v2 is None:
-            raise RuntimeError(
-                f"mineru produced no content_list_v2 for {doc.name} under {out_dir}"
+    if middle is None and v2 is None:
+        raise RuntimeError(
+            f"mineru produced no parse output for {doc.name} under {out_dir}"
+        )
+
+    v2_records = json.loads(v2.read_text(encoding="utf-8")) if v2 is not None else None
+    if middle is not None:
+        blocks, page_dims = project_middle(middle, v2_records)
+        if not blocks and v2_records:
+            # vlm/hybrid-engine write a different middle schema (no pdf_info).
+            blocks = _project(v2_records)
+            page_dims = None
+            logger.warning(
+                "%s: middle.json has no pdf_info; falling back to content_list_v2",
+                doc.name,
             )
-    records = json.loads(v2.read_text(encoding="utf-8"))
-    blocks = _project(records)
+    else:
+        blocks = _project(v2_records or [])
+        page_dims = None
+        logger.warning(
+            "%s: no middle.json; falling back to content_list_v2", doc.name
+        )
     logger.info("%s: %d blocks", doc.name, len(blocks))
-    return blocks
+    return blocks, page_dims
 
 
 def pair_images(doc: Path, out_dir: Path, blocks: list[Block]) -> list[ExtractedImage]:
@@ -115,7 +141,11 @@ def pair_images(doc: Path, out_dir: Path, blocks: list[Block]) -> list[Extracted
         if src is None:
             continue
         block.image_path = src
-        out.append(ExtractedImage(path=src, page=block.page, caption=block.text))
+        out.append(
+            ExtractedImage(
+                path=src, page=block.page, caption=block.text, bbox=block.image_bbox
+            )
+        )
     covered = {img.path.name for img in out}
     for path in files:
         if path.name not in covered:
@@ -266,7 +296,7 @@ def _image_source_path(content: dict) -> Path | None:
 
 def _v2_text(kind: str, content: dict) -> str:
     if kind == "table":
-        return _html_table_to_markdown(content.get("html") or "")
+        return html_table_to_markdown(content.get("html") or "")
     if kind == "list" or kind == "index":
         return _join_list_items(content.get("list_items"))
     if kind == "image":
@@ -287,7 +317,7 @@ def _v1_text(rec: dict) -> str:
     kind = rec.get("type")
     if kind == "table":
         caps = rec.get("table_caption") or []
-        body = _html_table_to_markdown(rec.get("table_body") or "")
+        body = html_table_to_markdown(rec.get("table_body") or "")
         return ("\n".join(caps) + "\n\n" + body) if caps else body
     if kind == "list":
         return _join_list_items(rec.get("list_items"))
@@ -346,37 +376,6 @@ def _join_lines(values) -> str:
     return "\n".join(parts)
 
 
-def _html_table_to_markdown(html: str) -> str:
-    """Minimal HTML ``<table>`` → GitHub-flavored markdown, via lxml.
-
-    Cell text is flattened (no colspan/rowspan merging), pipes escaped, and
-    line breaks collapsed so each cell stays one markdown line. A wrong or
-    non-table input is passed through unchanged.
-    """
-    if not html or "<table" not in html.lower():
-        return html
-    try:
-        root = lxml_html.fromstring(html)
-    except Exception:
-        return html
-    rows: list[list[str]] = []
-    for tr in root.xpath(".//tr"):
-        cells = []
-        for cell in tr:
-            if cell.tag not in ("td", "th"):
-                continue
-            text = " ".join(cell.itertext()).strip().replace("\n", " ").replace("|", "\\|")
-            cells.append(text)
-        if cells:
-            rows.append(cells)
-    if not rows:
-        return html
-    width = max(len(r) for r in rows)
-    rows = [r + [""] * (width - len(r)) for r in rows]
-    lines = [
-        "| " + " | ".join(rows[0]) + " |",
-        "| " + " | ".join("---" for _ in range(width)) + " |",
-    ]
-    for r in rows[1:]:
-        lines.append("| " + " | ".join(r) + " |")
-    return "\n".join(lines)
+# ``html_table_to_markdown`` lives in ``blocks.py`` so both the v2 projection
+# here and the middle projection in ``middle.py`` share it without a circular
+# import.

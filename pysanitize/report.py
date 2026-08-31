@@ -39,6 +39,9 @@ class AuditInfo:
     duration_s: float
     started_at: str = ""
     version: str = __version__
+    redacted_pdf: str | None = None  # filename under out_dir, or None
+    redacted_pages: int = 0
+    redaction_regions: int = 0
 
 
 def write_audit(info: AuditInfo, out_dir: Path) -> Path:
@@ -59,6 +62,11 @@ def write_audit(info: AuditInfo, out_dir: Path) -> Path:
             "by_field": _count_by_field(info.detections),
         },
         "images": {"total": info.images_total, "masked": info.images_masked},
+        "redaction": {
+            "pdf": info.redacted_pdf,
+            "pages": info.redacted_pages,
+            "regions": info.redaction_regions,
+        },
         # Only masked values appear here — the raw spans go to the opt-in
         # sensitive_report.json.
         "masked_spans": [

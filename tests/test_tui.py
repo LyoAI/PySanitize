@@ -4,24 +4,24 @@ from __future__ import annotations
 
 import asyncio
 
-from textual.widgets import TabbedContent
+from textual.widgets import Input, Switch, TabbedContent
 
 from pysanitize.tui import PySanitizeApp
-from pysanitize.tui.screens import FieldsPane, OptionsPane, RunPane
+from pysanitize.tui.screens import FieldsPane, ImagePane, OptionsPane, RunPane
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def test_app_mounts_four_tabs():
+def test_app_mounts_five_tabs():
     async def _test():
         app = PySanitizeApp()
         async with app.run_test() as pilot:
             tabs = app.query_one(TabbedContent)
-            assert tabs.tab_count == 4
+            assert tabs.tab_count == 5
             assert app.query(FieldsPane) and app.query(OptionsPane)
-            assert app.query(RunPane)
+            assert app.query(ImagePane) and app.query(RunPane)
 
     _run(_test())
 
@@ -50,6 +50,44 @@ def test_options_pane_collects_defaults():
             params = opts.collect()
             assert params["detector"] == "hybrid"  # the pre-checked radio
             assert opts.file_path() is None        # nothing typed yet
+
+    _run(_test())
+
+
+def test_image_pane_follows_text_fields_by_default():
+    async def _test():
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            pane = app.query_one(ImagePane)
+            params = pane.collect()
+            assert params["mask_images"] is None      # not enabled
+            assert params["image_classes"] is None    # blank → dropped, config default
+            assert params["image_fields"] is None     # null = follow text fields
+
+    _run(_test())
+
+
+def test_image_pane_splits_classes_into_list():
+    """Regression: a raw string is iterated char-by-char by the pipeline."""
+    async def _test():
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            pane = app.query_one(ImagePane)
+            pane.query_one("#image-classes", Input).value = " face, text ,person"
+            assert pane.collect()["image_classes"] == ["face", "text", "person"]
+
+    _run(_test())
+
+
+def test_image_pane_picks_fields_when_not_following():
+    async def _test():
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            pane = app.query_one(ImagePane)
+            pane.query_one("#image-follow", Switch).value = False
+            assert "phone" in pane.collect()["image_fields"]
+            pane._deselect_all()
+            assert pane.collect()["image_fields"] == []  # explicit none survives
 
     _run(_test())
 

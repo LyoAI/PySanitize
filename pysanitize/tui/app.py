@@ -1,10 +1,11 @@
 """The PySanitize TUI app: a tabbed frontend over ``core.run_sanitizer``.
 
-Four tabs — ① Fields (what to detect), ② Options (document / mode / endpoint /
-images / output), ③ Run (custom LLM requirements + live log), ④ Results
-(summary). The run itself never blocks the UI: ``sanitize_document`` executes
-on a ``@work(thread=True)`` worker, the pipeline log streams into the Run tab
-via :class:`TuiLogHandler`, and the result lands on the Results tab.
+Five tabs — ① Fields (what to detect), ② Options (document / mode / endpoint /
+output), ③ Image (image masking targets), ④ Run (custom LLM requirements +
+live log), ⑤ Results (summary). The run itself never blocks the UI:
+``sanitize_document`` executes on a ``@work(thread=True)`` worker, the pipeline
+log streams into the Run tab via :class:`TuiLogHandler`, and the result lands
+on the Results tab.
 """
 
 from __future__ import annotations
@@ -23,9 +24,15 @@ from pysanitize import __version__
 from pysanitize.core import run_sanitizer
 from pysanitize.pipeline import SanitizeResult
 from pysanitize.tui.run_worker import attach_log_handler, detach_log_handler, shape_params
-from pysanitize.tui.screens import FieldsPane, OptionsPane, ResultsPane, RunPane
+from pysanitize.tui.screens import FieldsPane, ImagePane, OptionsPane, ResultsPane, RunPane
 
-_PANE = {"fields": "tab-fields", "options": "tab-options", "run": "tab-run", "results": "tab-results"}
+_PANE = {
+    "fields": "tab-fields",
+    "options": "tab-options",
+    "run": "tab-run",
+    "results": "tab-results",
+    "image": "tab-image",
+}
 
 
 class _FileBrowser(ModalScreen[Path | None]):
@@ -80,7 +87,7 @@ class PySanitizeApp(App[None]):
     #quit-btn { margin-right: 1; }
     #requirements { height: 6; border: round $primary; }
     #run-log { height: 1fr; border: round $primary; margin-top: 1; }
-    #field-list { height: auto; max-height: 60vh; border: round $primary; }
+    #field-list, #image-field-list { height: auto; max-height: 60vh; border: round $primary; }
     #tree { height: 1fr; }
     """
 
@@ -93,9 +100,11 @@ class PySanitizeApp(App[None]):
                 yield FieldsPane()
             with TabPane("② Options", id="tab-options"):
                 yield OptionsPane()
-            with TabPane("③ Run", id="tab-run"):
+            with TabPane("③ Image", id="tab-image"):
+                yield ImagePane()
+            with TabPane("④ Run", id="tab-run"):
                 yield RunPane()
-            with TabPane("④ Results", id="tab-results"):
+            with TabPane("⑤ Results", id="tab-results"):
                 yield ResultsPane()
         yield Footer()
 
@@ -106,6 +115,10 @@ class PySanitizeApp(App[None]):
     @property
     def options_pane(self) -> OptionsPane:
         return self.query_one(OptionsPane)
+
+    @property
+    def image_pane(self) -> ImagePane:
+        return self.query_one(ImagePane)
 
     @property
     def run_pane(self) -> RunPane:
@@ -133,6 +146,7 @@ class PySanitizeApp(App[None]):
             return
 
         raw: dict[str, Any] = self.options_pane.collect()
+        raw.update(self.image_pane.collect())
         raw.update(doc_path=str(doc), fields=fields)
         extra = self.run_pane.requirements()
 

@@ -131,7 +131,7 @@ def parse_document(
     """
     path = Path(doc_path)
     out_dir = Path(out_dir) if out_dir is not None else (CACHE_DIR / MINERU_OUT_DIRNAME)
-    blocks = parse_blocks(
+    blocks, page_dimensions = parse_blocks(
         path, out_dir, backend=backend, lang=lang, skip_existing=skip_existing
     )
     images = pair_images(path, out_dir, blocks)
@@ -141,4 +141,5 @@ def parse_document(
         blocks=blocks,
         out_dir=out_dir,
         images=images,
+        page_dimensions=page_dimensions,
     )

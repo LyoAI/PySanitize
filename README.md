@@ -2,17 +2,17 @@
 
 # 🛡️ PySanitize
 
-**Multi-format document desensitization · local parsing · rules + LLM locating · class-driven image mosaicing**
+**Multi-format document desensitization · local parsing · rules + LLM locating · class- and field-driven image mosaicing · layout-preserving PDF redaction**
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Version](https://img.shields.io/badge/version-0.2.0-4A90D9)
-![Tests](https://img.shields.io/badge/tests-78%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-143%20passed-brightgreen)
 ![Parse](https://img.shields.io/badge/parse-local%20MinerU-2E7D32)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![CI](https://github.com/LyoAI/PySanitize/actions/workflows/ci.yml/badge.svg)
 
-**PDF · DOCX · Excel · scans** → **sanitized Markdown + mosaiced images + audit report**
+**PDF · DOCX · Excel · scans** → **sanitized Markdown + mosaiced images + audit report + redacted PDF**
 
 English | [中文](./README_ZH.md)
 
@@ -26,7 +26,8 @@ PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / scanned 
 |---|---|
 | 🧩 **Multi-format input** | PDF / image / DOCX / PPTX / XLSX parsed into one unified structure |
 | 🔍 **Rules + LLM dual engine** | regex + dictionary heuristics (offline-ready); the LLM only *locates*, never rewrites, with verbatim re-match against hallucination |
-| 🖼️ **Class-driven image masking** | `face` (faces) / `text` (OCR text) / any YOLO class → mosaic |
+| 🖼️ **Image masking** | `face` / `text` (OCR) / any YOLO class **and** field-driven (mask only the sensitive fields OCR finds in an image, e.g. a company name on a seal) → mosaic |
+| 📄 **PDF redaction** | PDF inputs also yield a layout-preserving `redacted.pdf` — sensitive glyphs truly *deleted*, mosaic on top, table borders intact |
 | 🔌 **Switchable providers** | `--provider openai \| pingan`, flip between intranet/extranet |
 | 📊 **Audit-friendly** | public summary has no raw values; the raw-value report is only written with `--audit` |
 | 🛡️ **Fault-tolerant** | missing keys / optional deps / model downloads degrade with a warning, never a hard crash |
@@ -35,10 +36,11 @@ PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / scanned 
 
 ```text
 input(PDF/DOCX/Excel/scan)
-  → [parser]      MinerU → ParsedDocument{text, blocks, images/}
+  → [parser]      MinerU middle.json (per-line geometry) → ParsedDocument{text, blocks, images/}
   → [detector]    rules + LLM locate sensitive fields → exact char offsets
   → [masker]      mask by field type (138****5678 / **** / keep head-tail N)
-  → [image]       class-driven detection (face/OCR text/YOLO objects) → PIL mosaic
+  → [image]       class- + field-driven detection (face/OCR text/YOLO objects) → PIL mosaic
+  → [redact]      (PDF only) offsets → page rects → redacted.pdf (glyphs deleted, mosaic)
   → output        sanitized.md + images_masked/ + audit.json
 ```
 
@@ -91,6 +93,14 @@ uv run pysanitize sample.pdf --mask-images --image-classes text   # printed text
 
 # 4) Restrict fields + write a raw-value audit report (local review only, do not share)
 uv run pysanitize sample.xlsx --fields person_name,phone --audit
+
+# 5) Layout-preserving PDF redaction (on by default for PDF inputs)
+uv run pysanitize sample.pdf                                  # writes output/<stem>/redacted.pdf
+uv run pysanitize sample.pdf --redaction-style block          # solid box instead of mosaic
+uv run pysanitize sample.pdf --no-redact-pdf                  # skip redacted.pdf entirely
+
+# 6) Field-driven image masking: OCR the images, mask only the matching fields
+uv run pysanitize sample.pdf --mask-images --image-fields company_name,address
 ```
 
 Each run produces a job directory (default `output/<doc-name>/`):
@@ -99,6 +109,7 @@ Each run produces a job directory (default `output/<doc-name>/`):
 output/<doc-name>/
 ├── sanitized.md            # sanitized Markdown (image links point into images_masked/)
 ├── images_masked/          # every extracted image — masked copies, or originals when masking is off
+├── redacted.pdf            # PDF inputs only: original layout, sensitive regions deleted + mosaiced
 └── audit.json              # public summary: hit counts + masked text, no raw values
 ```
 
@@ -111,7 +122,7 @@ uv sync --extra tui        # one-time: installs Textual
 uv run pysanitize --launch tui
 ```
 
-A four-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, image masking; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths. Quit with the ✕ button or `ctrl+c` (the default `ctrl+q` is swallowed by some terminals, and `cmd+q` belongs to macOS). The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
+A five-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, output; **③ Image** — image masking targets (enable, class list, face backend) plus a "Same as text" toggle that lets you pick a different (possibly larger) field set to OCR inside images; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths. Quit with the ✕ button or `ctrl+c` (the default `ctrl+q` is swallowed by some terminals, and `cmd+q` belongs to macOS). The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
 
 ## 🐍 Python API
 
@@ -126,9 +137,13 @@ result = sanitize_document(
     fields=["phone", "company_name", "person_name"],
     mask_images=True,
     image_classes=["face"],     # image targets: face | text | <YOLO class>; empty = none
+    image_fields=["company_name", "address"],  # None = same as fields; [] = no image-field masking
+    redact_pdf=True,            # PDF sources also get redacted.pdf
+    redaction_style="mosaic",   # mosaic | block
     audit=False,
 )
 print(result.sanitized_md)     # Path
+print(result.redacted_pdf)     # Path | None (PDF sources with resolvable regions)
 print(result.detections)       # each with field_type / start / end / masked_value
 ```
 
@@ -159,9 +174,13 @@ Chunking is block-aware and adapts to each document's heading structure: `text.c
 
 Fields are fully configurable — add/remove/edit a line in `config/fields.yaml`; `--fields a,b` detects only what you name.
 
-## 🖼️ Image masking (class-driven)
+## 🖼️ Image masking
 
-Images aren't only faces — they can hold company names, seals, screenshots of text. List the targets to mask in `image.classes` / `--image-classes`; **no targets = no image is touched** (rather miss than wrongly mosaic).
+Images aren't only faces — they can hold company names, seals, screenshots of text. There are two complementary ways to decide what gets mosaiced; **with no targets at all, no image is touched** (rather miss than wrongly mosaic).
+
+### Class-driven (`image.classes`)
+
+List the targets to mask in `image.classes` / `--image-classes`:
 
 | class | description | dependency |
 |---|---|---|
@@ -175,7 +194,34 @@ uv run pysanitize contract.pdf --mask-images --image-classes text
 uv run pysanitize contract.pdf --mask-images --image-classes person,car --image-model yolov8n.pt
 ```
 
+### Field-driven (`image.fields`)
+
+A company name or registered address rarely fits a *class* — it's text inside a logo or seal. `image.fields` runs the **same field detectors** over each image's OCR text and mosaics only the matching spans:
+
+```bash
+uv run pysanitize contract.pdf --mask-images --image-fields company_name,address
+```
+
+- **Default** (`null` in `config/pipeline.yaml`): the same active field set as the text detector (`--fields`)
+- An explicit list may be a **superset** (an address stamped on a seal that never appears in the body text)
+- `image.classes` is unaffected and still runs alongside
+- Needs `--extra image-ocr`; near-full-page scan images are skipped (their text is already handled as document text)
+
 The mosaic is a NEAREST block mosaic (default 16px) that covers only the detected boxes — everything outside is preserved.
+
+## 📄 PDF redaction (`redacted.pdf`)
+
+For PDF sources the pipeline additionally writes `redacted.pdf` next to `sanitized.md`: the **original layout is preserved** while every detected span is truly *deleted* from the content stream and replaced with a mosaic (`--redaction-style mosaic`, default) or a solid box (`block`). Table borders and vector graphics stay; overlapping image pixels are cleared.
+
+- Coordinates come from MinerU's `middle.json` per-line bboxes; in-line hits are placed by proportional char width (CJK is effectively monospaced)
+- **Tables**: middle 3.x exposes no cell coordinates, so a hit in a table redacts the whole table bbox — conservative over-redaction, safe by design
+- **Images**: regions of images that were *actually* mosaiced are stamped back, so the PDF page matches `images_masked/`; unmasked images stay untouched
+- Scanned pages (no text layer) are naturally skipped by verification, which downgrades any leftover to a warning, never a failure
+- Off by `--no-redact-pdf`, or `output.redact_pdf: false` in `config/pipeline.yaml`; office inputs never produce one
+
+### Why PyMuPDF (AGPL)
+
+MinerU only **reads** PDFs — it has no writer, so re-rendering would lose fonts, table lines and backgrounds and still need a writer. PyMuPDF is the only dependency that reads *and* faithfully rewrites a PDF (true glyph deletion). It is **AGPL-licensed**: fine for internal tooling, but review the implications before embedding PySanitize in a closed-source product.
 
 ## ⚙️ LLM provider config
 
@@ -191,11 +237,13 @@ uv run pysanitize contract.pdf --detector hybrid --provider pingan --model qwen3
 
 ## 🔒 Security boundaries & known limits
 
-- **Scans** (no text layer): M1 desensitizes only the OCR'd Markdown; M2 will do coordinate-level redaction with `middle.json` bboxes
+- **Scans** (no text layer): the OCR'd Markdown is desensitized; `redacted.pdf` verification naturally finds nothing to remove there
+- **Tables redact whole-table in the PDF** (cell coordinates don't exist in middle 3.x); the `sanitized.md` output is still cell-precise
 - **Person / company names** are dictionary heuristics with limited precision; use `hybrid` for sensitive material
 - **LLM hallucination**: the verbatim re-match gate means misses are far likelier than false positives
-- **Image masking is off by default**: you must pass `--image-classes`; `text` mosaics **all** printed text in an image
+- **Image masking is off by default**: you must pass `--image-classes` and/or `--image-fields`; `text` mosaics **all** printed text in an image
 - **Long-number false positives** (18-digit figures in finance tables): checksums on by default + `bank_account` off by default
+- **PyMuPDF is AGPL-licensed** — used only for `redacted.pdf`; fine for internal tooling, review before closed-source distribution
 - MinerU downloads models on first run; `mineru[pipeline]` is heavy (torch/opencv)
 
 ## 🛠️ Development
@@ -206,9 +254,10 @@ uv run pytest          # unit tests green
 
 ```
 pysanitize/
-├── parser/     MinerU wrapper + ParsedDocument (text / blocks / image pairing / offset mapping)
-├── detector/   rules / llm / registry (overlap resolution) / image (face / OCR text / YOLO classes)
+├── parser/     MinerU wrapper (middle.json projection + v2 fallback) + ParsedDocument (line geometry / image pairing / offset mapping)
+├── detector/   rules / llm / registry (overlap resolution) / image (face / OCR text / YOLO classes / field-driven OCR)
 ├── masker/     text (offset masking) / image (mosaic)
+├── redact/     offsets → page rects, PyMuPDF redaction + verification
 ├── pipeline.py sanitize_document() orchestration (the only public entry)
 ├── cli.py      argparse CLI
 ├── llm/        LLM facade (openai / pingan providers)
@@ -220,7 +269,7 @@ Extension points: **add a field** → edit `fields.yaml`; **add a detector** →
 
 ## 🗺️ Roadmap
 
-- **M2**: preserve original layout — PDF redaction via `middle.json` bboxes + PyMuPDF `apply_redactions` (true deletion); DOCX/Excel in-place editing; metadata cleaning, anonymized output names
+- **M2**: PDF redaction is shipped (`redacted.pdf`); remaining: DOCX/Excel in-place editing, metadata cleaning, anonymized output names
 - **M3**: WebUI (upload + task queue + progress)
 
 ---

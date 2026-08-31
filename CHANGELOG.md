@@ -2,23 +2,32 @@
 
 ## [Unreleased]
 
-Config centralized in YAML, prompts externalized, and an interactive TUI alongside the CLI.
+middle.json is the primary parse source with per-line geometry, PDF inputs gain a layout-preserving `redacted.pdf`, and image masking becomes field-driven.
 
 ### Added
 
-- **Interactive TUI** (`--launch tui`, Textual, `--extra tui`): four tabs — Fields (checkbox-select from `config/fields.yaml`), Options (file/detector/LLM/image settings), Run (free-form requirements appended to the LLM prompt, live log), Results (per-field counts + output paths); runs the pipeline in a background worker via `pysanitize.core.run_sanitizer`, the shared frontend facade for the future WebUI. Quits via a visible ✕ button or `ctrl+c` (terminals commonly swallow the default `ctrl+q`); the file picker gains a Cancel button and `esc`
-- **`pysanitize/prompts/`**: LLM system/user prompts move out of `detector/llm.py` into `system.md` / `user.md` templates; `set_extra_requirements()` lets the TUI append custom requirements to the system prompt
-- **`pysanitize/core.py`**: `run_sanitizer()` facade wrapping `sanitize_document()` with `extra_requirements` injection
+- **PDF redaction** (`pysanitize/redact/`): for PDF sources the pipeline writes `redacted.pdf` beside `sanitized.md` — sensitive spans are truly *deleted* from the content stream (`apply_redactions(text=0)`) and replaced with a mosaic (or solid box, `--redaction-style block`); table borders and vector graphics survive (`graphics=0`); overlapping image pixels are cleared (`images=2`). `verify_redaction()` re-reads the output and downgrades leftovers to a warning. `SanitizeResult.redacted_pdf` + audit `redaction` stats
+- **Field-driven image masking** (`image.fields` / `--image-fields`): each extracted image is OCR'd (PaddleOCR) and the **same text field detectors** run over the recognized text; only the matching spans are mosaiced. Default (`null`) follows the text field set; an explicit list may be a superset; `[]` disables it. Near-full-page scan images are skipped (their text is already handled as document text). Complementary to the existing class-driven detectors
+- **`pysanitize/parser/middle.py`**: MinerU `middle.json` projection — per-line geometry projected into `Block.line_boxes` (`LineBox`), TOC (`index`) dropped from text but kept as empty placeholders so per-page order aligns with v2 records, image/chart blocks carry `image_path` + `image_bbox`, and table markdown is recovered from v2 `html` (±1 positional retry, caption-only fallback). Page sizes surface as `ParsedDocument.page_dimensions`
+- **TUI ③ Image tab**: image masking targets (enable switch, class list, face backend) plus a "Same as text" toggle and a field `SelectionList` for image-specific fields; tabs renumbered to display order (① Fields ② Options ③ Image ④ Run ⑤ Results); `shape_params` keeps explicit empty lists (`image_fields=[]`) so "no field-driven masking" survives
+- **`pymupdf` promoted to a runtime dependency** (was dev-only) — the only dependency that both reads and faithfully rewrites a PDF; AGPL-licensed, documented in the README
 
 ### Changed
 
+- **Parse source is `middle.json`**, not `content_list_v2` — every span carries page coordinates, so detections map onto page rectangles (`resolve_rects` → in-line proportional sub-boxes / whole-block bbox for tables) instead of a coordinate-less derived projection. v2 remains for table cell text and as a fallback when a backend emits no `pdf_info`
+- **CLI**: `--no-redact-pdf` / `--redaction-style {mosaic,block}` / `--image-fields a,b`; `_run_sanitize` prints the `redacted.pdf` path
+- **`config/pipeline.yaml`**: `output.redact_pdf` (default true) + `output.redaction_style` (mosaic), `image.fields` (null = follow the text fields)
 - **`<file>` promoted to the top-level CLI command**: `pysanitize sample.pdf --detector hybrid`; the pre-0.3 `pysanitize sanitize sample.pdf` form keeps working as an alias; `--launch tui|webui` selects an interactive frontend
 - **All pipeline tunables centralized in `config/pipeline.yaml`** (`text.chunking.*`, `text.min/max_value_len`, `text.max_completion_tokens`, `image.mosaic_factor`, `image.haar/ocr/yolo.*`, …); Python modules keep only sentinel defaults resolved from config at call time — no scattered module-level constants
 - Removed the dead `utils/skill_loader.py`
 
+### Fixed
+
+- **Short values are never emitted unmasked**: `MaskSpec.mask` could return a value verbatim when `keep_head + keep_tail` covered the whole string — e.g. a 7-digit hotline `9555526` with the phone mask (keep 3+4) passed through unchanged in `sanitized.md`. Now the head is kept and the remainder is masked (`955****`), with at least one character always hidden
+
 ### Tests
 
-- 109 tests (from 89): config layer (`tests/test_config.py`), prompt templates (`tests/test_prompts.py`), TUI panes under Textual's Pilot harness (`tests/test_tui.py`), rewritten CLI parser tests
+- 143 tests (from 109): `tests/test_parser_middle.py` (line geometry / flatten offsets / TOC skip / table v2 alignment / office no-bbox), `tests/test_redact_pdf.py` (real pymupdf documents → detect → redact → `get_text` proves glyph removal + neighbor preservation + block style + multi-page), `tests/test_image_fields.py` (mock OCR → field rules → sub-line mosaic boxes; graceful degradation without paddleocr), pipeline redaction + `image.fields` resolution, TUI five-tab mount + Image-pane collect
 
 ## [0.2.0] - 2026-08-24
 

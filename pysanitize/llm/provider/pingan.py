@@ -171,7 +171,7 @@ class PingAnLLMProvider(LLMProvider):
             return self._parse(response)
         except Exception as e:
             logger.error(f"Error occurred while invoking the LLM: {e}")
-            return LLMResponse(content="Error: Failed to get response from LLM.", tool_calls=[], finish_reason="error", usage={})
+            return LLMResponse(content=None, finish_reason="error", error=str(e))
         
     async def ainvoke(
         self, 
@@ -245,5 +245,5 @@ class PingAnLLMProvider(LLMProvider):
             return self._parse(response)
         except Exception as e:
             logger.error(f"Error occurred while invoking the LLM: {e}")
-            return LLMResponse(content="Error: Failed to get response from LLM.", tool_calls=[], finish_reason="error", usage={})
+            return LLMResponse(content=None, finish_reason="error", error=str(e))
     

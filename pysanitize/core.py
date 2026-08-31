@@ -37,8 +37,9 @@ def run_sanitizer(
         **params: forwarded verbatim to
             :func:`pysanitize.pipeline.sanitize_document` — ``detector``,
             ``fields``, ``llm_model``, ``llm_provider``, ``mask_images``,
-            ``image_classes``, ``image_backend``, ``image_model_path``,
-            ``score_threshold``, ``mosaic_factor``, ``audit``, ``out_dir``,
+            ``image_classes``, ``image_fields``, ``image_backend``,
+            ``image_model_path``, ``score_threshold``, ``mosaic_factor``,
+            ``redact_pdf``, ``redaction_style``, ``audit``, ``out_dir``,
             ``parse_backend``, ``lang``.
 
     Returns:
