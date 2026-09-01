@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recover-key", dest="recover_key",
         help=(
-            "recovery passphrase (otherwise PY_SANITIZE_RECOVER_KEY env, or a "
+            "recovery passphrase (otherwise PYSANITIZE_RECOVER_KEY env, or a "
             "key is generated into .recover.key in the output directory; "
             "avoid this flag in shared shells — the value lands in history)"
         ),

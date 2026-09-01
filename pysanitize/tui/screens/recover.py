@@ -43,7 +43,7 @@ class RecoverPane(Vertical):
         with Horizontal(classes="field-row"):
             yield Input(
                 password=True,
-                placeholder="blank: $PY_SANITIZE_RECOVER_KEY / .recover.key",
+                placeholder="blank: $PYSANITIZE_RECOVER_KEY / .recover.key",
                 id="recover-pass",
             )
 

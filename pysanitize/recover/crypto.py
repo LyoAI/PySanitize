@@ -21,6 +21,15 @@ import re
 import secrets
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# The repo-root ``.env`` may hold the passphrase (the same file the rest of the
+# app reads for API keys). The recover package loads it directly rather than
+# importing pysanitize.config, keeping recovery an independent consumer — only
+# the audit + passphrase, never the sanitize pipeline. Harmless no-op when
+# there is no ``.env`` (e.g. a pip install); shell-exported vars always win.
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
 MAGIC = "ENC"
 VERSION = "v1"
 ALGORITHM = "AES-256-GCM"
@@ -28,7 +37,7 @@ KDF_NAME = "scrypt"
 KDF_PARAMS = {"n": 2**14, "r": 8, "p": 1}  # OWASP-recommended floor
 KEY_LEN = 32  # AES-256
 NONCE_LEN = 12  # GCM standard
-ENV_KEY = "PY_SANITIZE_RECOVER_KEY"
+ENV_KEY = "PYSANITIZE_RECOVER_KEY"
 KEYFILE_NAME = ".recover.key"
 
 # Format of a ciphertext as stored in audit.json — used to parse/validate a

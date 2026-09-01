@@ -66,6 +66,7 @@ DASHSCOPE_API_KEY=...     # qwen3-max / qwen3.6-27b
 MINERU_BACKEND=pipeline   # pipeline (CPU) | vlm-engine / hybrid-engine (GPU)
 MODELS_DIR=~/Models       # downloaded local models (YuNet ONNX, ...)
 LLM_TIMEOUT_S=180         # per-call LLM request timeout (seconds)
+PYSANITIZE_RECOVER_KEY=... # --recoverable / --recover passphrase (optional; else --recover-key / .recover.key)
 ```
 
 Optional features, unlock on demand:
@@ -152,7 +153,7 @@ result = sanitize_document(
     redaction_style="mosaic",   # mosaic | block
     audit=False,
     recoverable=True,           # audit.json records ciphertext for --recover (needs the recover extra)
-    recover_key="passphrase",   # else $PY_SANITIZE_RECOVER_KEY, else generated .recover.key
+    recover_key="passphrase",   # else $PYSANITIZE_RECOVER_KEY, else generated .recover.key
 )
 print(result.sanitized_md)     # Path
 print(result.redacted_pdf)     # Path | None (PDF sources with resolvable regions)
@@ -243,7 +244,7 @@ By default masking is one-way. With `--recoverable` (needs `uv sync --extra reco
 ```bash
 uv run pysanitize sample.pdf --recoverable                        # key generated into output/<doc>/.recover.key
 uv run pysanitize sample.pdf --recoverable --recover-key s3cret   # or pass a passphrase
-PY_SANITIZE_RECOVER_KEY=s3cret uv run pysanitize sample.pdf --recoverable   # or via the environment
+PYSANITIZE_RECOVER_KEY=s3cret uv run pysanitize sample.pdf --recoverable   # or via the environment
 
 # restore later — audit.json must sit beside the file (or pass --recover-audit):
 uv run pysanitize output/sample/sanitized.md --recover

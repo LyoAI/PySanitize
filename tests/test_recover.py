@@ -83,6 +83,12 @@ def test_meta_has_no_key_material():
 # ---- passphrase resolution ---------------------------------------------------
 
 
+def test_env_key_name():
+    # Locks the documented name — the docs / CLI help / TUI placeholder all
+    # refer to it, so a rename-back would silently break the .env path.
+    assert ENV_KEY == "PYSANITIZE_RECOVER_KEY"
+
+
 def test_passphrase_arg_beats_env_and_keyfile(tmp_path, monkeypatch):
     keyfile = tmp_path / ".recover.key"
     keyfile.write_text("from-file\n")

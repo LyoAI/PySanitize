@@ -84,7 +84,7 @@ def sanitize_document(
     redaction_style: str | None = None,   # mosaic | block (None → config)
     audit: bool | None = None,            # None → config output.audit
     recoverable: bool | None = None,      # None → config output.recoverable
-    recover_key: str | None = None,       # passphrase; else env PY_SANITIZE_RECOVER_KEY / .recover.key
+    recover_key: str | None = None,       # passphrase; else env PYSANITIZE_RECOVER_KEY / .recover.key
     verify_checksums: bool | None = None,
     out_dir: str | Path | None = None,    # job output root (default OUT_DIR/<stem>)
     mineru_backend: str | None = None,
@@ -118,7 +118,7 @@ def sanitize_document(
             AES-GCM ciphertext and its position (md range / PDF rects), so
             ``pysanitize --recover`` can restore the originals (md exactly;
             pdf best-effort). Needs the ``recover`` extra. The passphrase
-            comes from ``recover_key``, else ``PY_SANITIZE_RECOVER_KEY``,
+            comes from ``recover_key``, else ``PYSANITIZE_RECOVER_KEY``,
             else a key is generated into ``.recover.key`` inside the output
             directory — audit.json carries only public cipher parameters.
         recover_key: passphrase for the recovery cipher (see ``recoverable``).

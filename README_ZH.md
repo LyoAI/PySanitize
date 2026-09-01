@@ -149,7 +149,7 @@ result = sanitize_document(
     redaction_style="mosaic",   # mosaic | block
     audit=False,
     recoverable=True,           # audit.json 记录密文供 --recover 还原（需 recover extra）
-    recover_key="passphrase",   # 缺省读 $PY_SANITIZE_RECOVER_KEY，或自动生成 .recover.key
+    recover_key="passphrase",   # 缺省读 $PYSANITIZE_RECOVER_KEY，或自动生成 .recover.key
 )
 print(result.sanitized_md)     # Path
 print(result.redacted_pdf)     # Path | None（PDF 输入且有可解析区域时）
@@ -240,7 +240,7 @@ MinerU 只能**读** PDF —— 没有写入能力，重新渲染会丢字体/�
 ```bash
 uv run pysanitize 样例.pdf --recoverable                        # 口令自动生成到 output/<文档>/.recover.key
 uv run pysanitize 样例.pdf --recoverable --recover-key s3cret   # 或显式传口令
-PY_SANITIZE_RECOVER_KEY=s3cret uv run pysanitize 样例.pdf --recoverable   # 或走环境变量
+PYSANITIZE_RECOVER_KEY=s3cret uv run pysanitize 样例.pdf --recoverable   # 或走环境变量
 
 # 之后还原 —— audit.json 必须与文件同目录（或用 --recover-audit 指定）：
 uv run pysanitize output/样例/sanitized.md --recover

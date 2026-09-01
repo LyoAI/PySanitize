@@ -3,7 +3,7 @@
 Independent of the sanitize pipeline. Recovery needs three things — the
 sanitized document, its ``audit.json`` (records the cipher parameters plus
 each span's ciphertext and position) and the passphrase (arg >
-``PY_SANITIZE_RECOVER_KEY`` > the run's ``.recover.key`` keyfile). Public API:
+``PYSANITIZE_RECOVER_KEY`` > the run's ``.recover.key`` keyfile). Public API:
 
 - :class:`~pysanitize.recover.crypto.TokenCipher` — ciphertext, KDF, key management
 - :func:`~pysanitize.recover.restore.recover_file` — md/pdf → ``*_recovered.*``
