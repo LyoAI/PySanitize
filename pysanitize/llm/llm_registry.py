@@ -123,7 +123,7 @@ def _pingan_provider(section: dict, default_model: str) -> LLMProvider:
         "openApiCredential",
         "sceneId",
         "requestId",
-        "modelName",
+        "model_name",
     )
     # Guard fires before the lazy import, so a missing sceneId raises a clear
     # error instead of a cryptic ``int('')`` ValueError from the provider.
