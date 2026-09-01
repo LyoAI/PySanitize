@@ -42,8 +42,8 @@ def build_detectors(
     Args:
         classes: what to look for — ``face``, ``text``, and/or YOLO class names
             (``person``, ``car``, …). ``None`` / empty means no image masking.
-        backend: face backend when ``face`` is requested (``auto``/``yunet``/
-            ``haar``/``yolo``).
+        backend: detector for the ``face`` class (``auto``/``yunet``/
+            ``haar``/``yolo``); every other class routes to YOLO.
         model_path: detection weights — YuNet ONNX for ``face`` (non-yolo), a
             YOLO ``.pt`` for object classes / the yolo face model.
         score_threshold: confidence cutoff passed to each detector (default:

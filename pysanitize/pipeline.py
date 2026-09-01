@@ -2,9 +2,10 @@
 
 The public entry is :func:`sanitize_document`, which turns one document into a
 job directory containing ``sanitized.md`` + ``images_masked/`` + ``audit.json``
-and, for PDF sources, a layout-preserving ``redacted.pdf`` (true glyph removal +
-mosaic). Every parameter defaults to ``config/pipeline.yaml``; explicit kwargs
-(set by the CLI only when the user actually passed a flag) override it.
+and, for PDF sources when enabled, a layout-preserving ``redacted.pdf`` (true
+glyph removal + mosaic). Every parameter defaults to ``config/pipeline.yaml``;
+explicit kwargs (set by the CLI only when the user actually passed a flag)
+override it.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ def sanitize_document(
     mask_images: bool | None = None,      # None → config image.enabled
     image_classes: list[str] | None = None,  # mask targets face|text|<yolo class>; empty = no masking
     image_fields: list[str] | None = None,   # field types to detect inside images (None → follow ``fields``)
-    image_backend: str | None = None,     # face backend auto | yunet | haar | yolo
+    image_backend: str | None = None,     # detector: auto/yunet/haar are face models, other classes → YOLO
     image_model_path: str | Path | None = None,
     score_threshold: float | None = None,
     mosaic_factor: int | None = None,
@@ -84,7 +85,7 @@ def sanitize_document(
     audit: bool | None = None,            # None → config output.audit
     verify_checksums: bool | None = None,
     out_dir: str | Path | None = None,    # job output root (default OUT_DIR/<stem>)
-    parse_backend: str | None = None,
+    mineru_backend: str | None = None,
     lang: str | None = None,
     skip_existing: bool = True,
 ) -> SanitizeResult:
@@ -107,6 +108,7 @@ def sanitize_document(
             addresses appear in images too). ``image.classes`` is unaffected.
         redact_pdf: for PDF sources, also write a layout-preserving
             ``redacted.pdf`` (true glyph removal + mosaic) alongside the md.
+            Off unless passed true (CLI ``--redact-pdf``) or enabled in config.
         redaction_style: ``mosaic`` (pixelated) or ``block`` (solid box).
         audit: additionally write ``sensitive_report.json`` with raw values.
         out_dir: where ``sanitized.md`` / ``images_masked/`` / ``audit.json``
@@ -173,7 +175,7 @@ def sanitize_document(
 
     doc = parse_document(
         doc_path,
-        backend=parse_backend or MINERU_BACKEND,
+        backend=mineru_backend or MINERU_BACKEND,
         lang=lang or "ch",
         skip_existing=skip_existing,
     )
@@ -228,7 +230,7 @@ def sanitize_document(
     redacted_pages = redaction_regions = 0
     if doc.source_suffix == ".pdf" and doc_path.is_file():
         do_redact = (
-            output_cfg.get("redact_pdf", True) if redact_pdf is None else redact_pdf
+            output_cfg.get("redact_pdf", False) if redact_pdf is None else redact_pdf
         )
         if do_redact:
             style = (

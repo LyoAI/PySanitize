@@ -36,13 +36,15 @@ def test_legacy_sanitize_subcommand_is_stripped():
 def test_parser_shape():
     args = build_parser().parse_args(
         ["a.pdf", "--detector", "hybrid", "--fields", "phone,person_name",
-         "--mask-images", "--image-backend", "yunet", "--audit", "--out-dir", "o"]
+         "--mask-images", "--image-backend", "yunet", "--audit", "--redact-pdf",
+         "--out-dir", "o"]
     )
     assert args.file == "a.pdf"
     assert args.detector == "hybrid"
     assert args.mask_images is True
     assert args.image_backend == "yunet"
     assert args.audit is True
+    assert args.redact_pdf is True
     assert args.out_dir == "o"
     assert args.launch is None
 
@@ -57,7 +59,30 @@ def test_defaults_to_none_for_config():
     assert args.detector is None
     assert args.mask_images is None
     assert args.audit is None
+    assert args.redact_pdf is None
     assert args.llm_provider is None
+
+
+def test_image_class_and_text_flags_map_to_pipeline_params():
+    from pysanitize.cli import _image_classes, _image_text_fields
+
+    parse = build_parser().parse_args
+    # bare --image-text = mask all printed text → the implicit `text` class,
+    # field detection explicitly off (all-text subsumes it)
+    a = parse(["a.pdf", "--mask-images", "--image-text"])
+    assert _image_classes(a) == ["text"]
+    assert _image_text_fields(a) == []
+    # field list → field-driven masking only
+    a = parse(["a.pdf", "--image-text", "company_name,phone"])
+    assert _image_classes(a) is None
+    assert _image_text_fields(a) == ["company_name", "phone"]
+    # object classes stay separate; both can combine
+    a = parse(["a.pdf", "--image-classes", "face,person", "--image-text"])
+    assert _image_classes(a) == ["face", "person", "text"]
+    # nothing given → config defaults hold (None sentinels)
+    a = parse(["a.pdf"])
+    assert _image_classes(a) is None
+    assert _image_text_fields(a) is None
 
 
 def test_provider_model_flags():
@@ -91,12 +116,12 @@ def test_sanitize_runs_pipeline(monkeypatch, capsys):
 
     monkeypatch.setattr("pysanitize.pipeline.sanitize_document", fake_sanitize)
     with pytest.raises(SystemExit) as e:
-        main(["sanitize", "a.pdf", "--detector", "rules", "--no-mask-images"])
+        main(["sanitize", "a.pdf", "--detector", "rules"])
     assert e.value.code == 0
     out = capsys.readouterr().out
     assert "sanitized.md" in out
     assert called["detector"] == "rules"
-    assert called["mask_images"] is False
+    assert called["mask_images"] is None  # absent flag → config decides
     assert called["fields"] is None
 
 

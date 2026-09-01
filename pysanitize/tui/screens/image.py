@@ -12,12 +12,14 @@ from pysanitize.detector.specs import load_field_specs
 
 
 class ImagePane(VerticalScroll):
-    """Image masking controls.
+    """Image masking controls — generic object detection, not just faces.
 
-    Two complementary targets:
+    Two complementary targets, split along the model boundary:
 
-    - **classes** (``face`` / ``text`` / a YOLO class) — mask whatever the
-      class detectors find;
+    - **classes** — any *object* a detection model can name (a face, a person,
+      a door plate, a storefront sign …): ``face`` uses dedicated face
+      detectors (YuNet/Haar), every other class runs through YOLO;
+      ``All text`` mosaics every printed-text region via OCR;
     - **fields** — mask only the sensitive *fields* OCR finds in the image text
       (company names on logos/seals, registered addresses, …). Defaults to the
       same field set as the ① Fields tab; flip "Same as text" off to pick a
@@ -31,9 +33,12 @@ class ImagePane(VerticalScroll):
             yield Switch(id="image-mask")
         with Horizontal(classes="field-row"):
             yield Label("Classes")
-            yield Input(placeholder="face, text, person, …", id="image-classes")
+            yield Input(placeholder="face, person, … (any detection class)", id="image-classes")
         with Horizontal(classes="field-row"):
-            yield Label("Face backend")
+            yield Label("All text")
+            yield Switch(id="image-text-all")
+        with Horizontal(classes="field-row"):
+            yield Label("Detector")
             yield Select(
                 options=[("auto", "auto"), ("yunet", "yunet"), ("haar", "haar"), ("yolo", "yolo")],
                 value="auto",
@@ -50,7 +55,11 @@ class ImagePane(VerticalScroll):
             yield Button("Select all", id="image-fields-all")
             yield Button("Deselect all", id="image-fields-none")
         yield Static(
-            "On = use the ① Fields selection; off = pick image-specific fields "
+            "Classes are generic detection targets — face uses dedicated face "
+            "detectors; anything else (door plates, signage, …) goes through "
+            "YOLO, non-standard classes need custom weights (--image-model). "
+            "All text = mosaic every printed-text region (OCR). Fields: on = "
+            "use the ① Fields selection; off = pick image-specific fields "
             "below (e.g. company_name for logos/seals). Empty + off = no "
             "field-driven image masking.",
             classes="hint",
@@ -78,17 +87,22 @@ class ImagePane(VerticalScroll):
     def collect(self) -> dict:
         """User-supplied options only; blanks/None stay absent so config defaults hold."""
         follow = self.query_one("#image-follow", Switch).value
+        classes = _split_classes(self.query_one("#image-classes", Input).value)
+        if self.query_one("#image-text-all", Switch).value:
+            # All-text masking subsumes any field match (same as bare --image-text).
+            classes = (classes or []) + ["text"]
+            fields: list[str] | None = []
+        else:
+            # None = follow the text fields; [] = explicitly none
+            fields = None if follow else self.selected_fields()
         return {
             "mask_images": self.query_one("#image-mask", Switch).value or None,
             # Comma-separated input → list; blank → None (config default).
             # The pipeline expects list[str] — a raw string would be iterated
             # character by character ("face" → f/a/c/e).
-            "image_classes": _split_classes(
-                self.query_one("#image-classes", Input).value
-            ),
+            "image_classes": classes,
             "image_backend": self.query_one("#image-backend", Select).value,
-            # None = follow the text fields; [] = explicitly none
-            "image_fields": None if follow else self.selected_fields(),
+            "image_fields": fields,
         }
 
     @on(Button.Pressed, "#image-fields-all")

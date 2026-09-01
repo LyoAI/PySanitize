@@ -88,7 +88,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "output": {
         "audit": False,
-        "redact_pdf": True,       # PDF inputs also produce redacted.pdf
+        "redact_pdf": False,      # opt-in: --redact-pdf or config true enables it
         "redaction_style": "mosaic",  # mosaic (pixelated) | block (solid box)
     },
 }

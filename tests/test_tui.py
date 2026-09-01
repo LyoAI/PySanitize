@@ -49,6 +49,10 @@ def test_options_pane_collects_defaults():
             opts = app.query_one(OptionsPane)
             params = opts.collect()
             assert params["detector"] == "hybrid"  # the pre-checked radio
+            assert params["audit"] is None         # switch off → config decides
+            assert params["redact_pdf"] is None
+            opts.query_one("#redact-pdf", Switch).value = True
+            assert opts.collect()["redact_pdf"] is True
             assert opts.file_path() is None        # nothing typed yet
 
     _run(_test())
@@ -88,6 +92,19 @@ def test_image_pane_picks_fields_when_not_following():
             assert "phone" in pane.collect()["image_fields"]
             pane._deselect_all()
             assert pane.collect()["image_fields"] == []  # explicit none survives
+
+    _run(_test())
+
+
+def test_image_pane_all_text_switch_subsumes_fields():
+    async def _test():
+        app = PySanitizeApp()
+        async with app.run_test() as pilot:
+            pane = app.query_one(ImagePane)
+            pane.query_one("#image-text-all", Switch).value = True
+            params = pane.collect()
+            assert "text" in params["image_classes"]   # implicit all-text class
+            assert params["image_fields"] == []        # field detection redundant
 
     _run(_test())
 

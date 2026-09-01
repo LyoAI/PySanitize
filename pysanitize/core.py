@@ -40,7 +40,7 @@ def run_sanitizer(
             ``image_classes``, ``image_fields``, ``image_backend``,
             ``image_model_path``, ``score_threshold``, ``mosaic_factor``,
             ``redact_pdf``, ``redaction_style``, ``audit``, ``out_dir``,
-            ``parse_backend``, ``lang``.
+            ``mineru_backend``, ``lang``.
 
     Returns:
         :class:`pysanitize.pipeline.SanitizeResult`.

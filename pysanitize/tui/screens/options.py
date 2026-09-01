@@ -42,6 +42,9 @@ class OptionsPane(VerticalScroll):
             yield Label("Audit report")
             yield Switch(id="audit")
         with Horizontal(classes="field-row"):
+            yield Label("Redacted PDF")
+            yield Switch(id="redact-pdf")
+        with Horizontal(classes="field-row"):
             yield Label("Out dir")
             yield Input(placeholder="output/<doc-name>/", id="out-dir")
 
@@ -58,6 +61,7 @@ class OptionsPane(VerticalScroll):
             "llm_model": self.query_one("#llm-model", Input).value.strip(),
             "llm_provider": self.query_one("#llm-provider", Input).value.strip(),
             "audit": self.query_one("#audit", Switch).value or None,
+            "redact_pdf": self.query_one("#redact-pdf", Switch).value or None,
             "out_dir": self.query_one("#out-dir", Input).value.strip(),
         }
 

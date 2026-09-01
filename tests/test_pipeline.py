@@ -236,7 +236,7 @@ def test_pdf_input_produces_redacted_pdf(make_doc, monkeypatch, tmp_path):
     doc.blocks[0].line_boxes = [LineBox("13812345678", box, 0, 11)]
     _patch_parse(monkeypatch, doc)
 
-    r = pl.sanitize_document(src, detector="rules", out_dir=tmp_path / "out")
+    r = pl.sanitize_document(src, detector="rules", redact_pdf=True, out_dir=tmp_path / "out")
     assert r.redacted_pdf is not None and r.redacted_pdf.name == "redacted.pdf"
     assert r.redacted_pdf.exists()
     text = "\n".join(p.get_text() for p in pymupdf.open(r.redacted_pdf))
@@ -248,7 +248,7 @@ def test_pdf_input_produces_redacted_pdf(make_doc, monkeypatch, tmp_path):
     assert audit["redaction"]["regions"] == 1
 
 
-def test_pdf_input_no_redact_pdf_flag_skips(make_doc, monkeypatch, tmp_path):
+def test_pdf_input_redact_pdf_false_skips(make_doc, monkeypatch, tmp_path):
     src = tmp_path / "doc.pdf"
     _write_phone_pdf(src)
     doc = make_doc([("paragraph", "13812345678", 1)])
@@ -278,8 +278,8 @@ def test_invalid_redaction_style_raises(make_doc, monkeypatch, tmp_path):
     import pytest
 
     with pytest.raises(ValueError, match="redaction_style"):
-        pl.sanitize_document(src, detector="rules", redaction_style="blur",
-                             out_dir=tmp_path / "out")
+        pl.sanitize_document(src, detector="rules", redact_pdf=True,
+                             redaction_style="blur", out_dir=tmp_path / "out")
 
 
 # ---- image.fields ------------------------------------------------------------
