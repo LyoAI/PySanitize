@@ -7,21 +7,22 @@ import asyncio
 from textual.widgets import Input, Switch, TabbedContent
 
 from pysanitize.tui import PySanitizeApp
-from pysanitize.tui.screens import FieldsPane, ImagePane, OptionsPane, RunPane
+from pysanitize.tui.screens import FieldsPane, ImagePane, OptionsPane, RecoverPane, RunPane
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def test_app_mounts_five_tabs():
+def test_app_mounts_six_tabs():
     async def _test():
         app = PySanitizeApp()
         async with app.run_test() as pilot:
             tabs = app.query_one(TabbedContent)
-            assert tabs.tab_count == 5
+            assert tabs.tab_count == 6
             assert app.query(FieldsPane) and app.query(OptionsPane)
             assert app.query(ImagePane) and app.query(RunPane)
+            assert app.query(RecoverPane)
 
     _run(_test())
 

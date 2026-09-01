@@ -35,6 +35,8 @@ class Redaction:
     page: int
     rect: BBox
     image: Path | None = None  # pre-mosaiced image to stamp (None = render+mosaic)
+    start: int = -1  # char offsets of the detection (audit bookkeeping)
+    end: int = -1
 
 
 def resolve_rects(doc, detections, page_dims=None) -> list[Redaction]:
@@ -44,7 +46,8 @@ def resolve_rects(doc, detections, page_dims=None) -> list[Redaction]:
     monospaced); a whole block is used when no per-line boxes exist — tables in
     middle 3.x have no cell coordinates, so the whole table bbox is redacted (a
     conservative over-redaction, documented in the README). Rectangles are
-    clamped to the page size.
+    clamped to the page size. Each Redaction keeps its detection's ``start``/
+    ``end`` so the pipeline can record the rects per span for ``--recover``.
     """
     redactions: list[Redaction] = []
     for d in detections:
@@ -67,7 +70,9 @@ def resolve_rects(doc, detections, page_dims=None) -> list[Redaction]:
             for b in boxes:
                 if pw and ph:
                     b = _clamp(b, pw, ph)
-                redactions.append(Redaction(page=block.page - 1, rect=b))
+                redactions.append(
+                    Redaction(page=block.page - 1, rect=b, start=d.start, end=d.end)
+                )
     return redactions
 
 

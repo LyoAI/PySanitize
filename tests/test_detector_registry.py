@@ -39,6 +39,59 @@ def test_position_sorted_output():
     assert starts == sorted(starts)
 
 
+def test_partial_overlap_merges_into_union():
+    # phone [0,11) and stock [6,12) overlap on [6,11): the union [0,12) keeps
+    # the verbatim union text and an identity whose mask reveals nothing —
+    # phone's keep_head/tail would publish the other field's digits, stock's
+    # fixed "******" template would not.
+    out = resolve([
+        D("phone", "13812360051", 0, 11),
+        D("stock_code", "600519", 6, 12),
+    ])
+    assert len(out) == 1
+    assert (out[0].start, out[0].end) == (0, 12)
+    assert out[0].field_type == "stock_code"
+    assert out[0].value == "138123600519"
+
+
+def test_partial_overlap_prefers_reveal_nothing_mask():
+    # Regression: a union that kept the phone identity masked "张三1…" with
+    # phone's keep_head=3 — the person name leaked into the sanitized output.
+    # The union must take the template-masked field's identity instead.
+    out = resolve([
+        D("person_name", "张三的账户13800", 0, 10),
+        D("phone", "13800138000", 5, 16),
+    ])
+    assert len(out) == 1
+    assert (out[0].start, out[0].end) == (0, 16)
+    assert out[0].field_type == "person_name"  # template "***" hides the union
+    assert out[0].value == "张三的账户13800138000"  # verbatim union text
+
+
+def test_contained_span_type_survives_merge_priority():
+    # Containment is not a union: the outer field detected exactly this span,
+    # so its identity (and mask) stays even when an inner field outranks it.
+    out = resolve([
+        D("company_name", "13812345600公司", 0, 13),
+        D("phone", "13812345600", 0, 11),
+    ])
+    assert len(out) == 1
+    assert out[0].field_type == "company_name"  # inner phone did not grow it
+    assert (out[0].start, out[0].end) == (0, 13)
+
+
+def test_chained_overlaps_merge_into_one_span():
+    out = resolve([
+        D("person_name", "a" * 10, 0, 10),
+        D("company_name", "a" * 10, 5, 15),
+        D("person_name", "a" * 8, 12, 20),
+    ])
+    assert len(out) == 1
+    assert (out[0].start, out[0].end) == (0, 20)
+    assert out[0].field_type == "company_name"  # outranks person_name
+    assert out[0].value == "a" * 20
+
+
 def test_registry_runs_all_detectors(make_doc, monkeypatch):
     doc = make_doc([("paragraph", "电话 13812345678", 1)])
 

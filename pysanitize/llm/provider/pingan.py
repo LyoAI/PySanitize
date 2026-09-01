@@ -109,6 +109,7 @@ class PingAnLLMProvider(LLMProvider):
         enable_thinking: bool = False,
         timeout: Optional[float] = None,  # None = inherit the client timeout
         stream: bool = False,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Invoke the PingAn LLM platform interface."""
         request_time = str(int(time.time() * 1000))
@@ -144,6 +145,8 @@ class PingAnLLMProvider(LLMProvider):
         }
         if tools:
             kwargs.update(tools=tools, tool_choice="auto")
+        if response_format:
+            kwargs["response_format"] = response_format
         
         # the PingAn platform caps request headers at 2MB
         current_size = len(json.dumps(kwargs, ensure_ascii=False).encode("utf-8"))
@@ -185,6 +188,7 @@ class PingAnLLMProvider(LLMProvider):
         enable_thinking: bool = False,
         timeout: Optional[float] = None,  # None = inherit the client timeout
         stream: bool = False,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Asynchronously invoke the PingAn LLM platform interface."""
         request_time = str(int(time.time() * 1000))
@@ -220,6 +224,8 @@ class PingAnLLMProvider(LLMProvider):
         }
         if tools:
             kwargs.update(tools=tools, tool_choice="auto")
+        if response_format:
+            kwargs["response_format"] = response_format
         
         # the PingAn platform caps request headers at 2MB
         current_size = len(json.dumps(kwargs, ensure_ascii=False).encode("utf-8"))

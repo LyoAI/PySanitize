@@ -90,6 +90,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "audit": False,
         "redact_pdf": False,      # opt-in: --redact-pdf or config true enables it
         "redaction_style": "mosaic",  # mosaic (pixelated) | block (solid box)
+        "recoverable": False,     # opt-in: audit records encrypted values for --recover, needs the recover extra
     },
 }
 

@@ -1,11 +1,11 @@
 """The PySanitize TUI app: a tabbed frontend over ``core.run_sanitizer``.
 
-Five tabs — ① Fields (what to detect), ② Options (document / mode / endpoint /
+Six tabs — ① Fields (what to detect), ② Options (document / mode / endpoint /
 output), ③ Image (image masking targets), ④ Run (custom LLM requirements +
-live log), ⑤ Results (summary). The run itself never blocks the UI:
-``sanitize_document`` executes on a ``@work(thread=True)`` worker, the pipeline
-log streams into the Run tab via :class:`TuiLogHandler`, and the result lands
-on the Results tab.
+live log), ⑤ Results (summary), ⑥ Recover (restore a sanitized artifact).
+Runs never block the UI: both operations execute on ``@work(thread=True)``
+workers, the pipeline log streams into the Run tab via :class:`TuiLogHandler`,
+and results land on the Results tab (sanitize) or the log (recover).
 """
 
 from __future__ import annotations
@@ -23,8 +23,16 @@ from textual.widgets import Button, DirectoryTree, Footer, Header, Input, Tabbed
 from pysanitize import __version__
 from pysanitize.core import run_sanitizer
 from pysanitize.pipeline import SanitizeResult
+from pysanitize.recover import RecoverResult
 from pysanitize.tui.run_worker import attach_log_handler, detach_log_handler, shape_params
-from pysanitize.tui.screens import FieldsPane, ImagePane, OptionsPane, ResultsPane, RunPane
+from pysanitize.tui.screens import (
+    FieldsPane,
+    ImagePane,
+    OptionsPane,
+    RecoverPane,
+    ResultsPane,
+    RunPane,
+)
 
 _PANE = {
     "fields": "tab-fields",
@@ -32,6 +40,7 @@ _PANE = {
     "run": "tab-run",
     "results": "tab-results",
     "image": "tab-image",
+    "recover": "tab-recover",
 }
 
 
@@ -106,6 +115,8 @@ class PySanitizeApp(App[None]):
                 yield RunPane()
             with TabPane("⑤ Results", id="tab-results"):
                 yield ResultsPane()
+            with TabPane("⑥ Recover", id="tab-recover"):
+                yield RecoverPane()
         yield Footer()
 
     @property
@@ -127,6 +138,10 @@ class PySanitizeApp(App[None]):
     @property
     def results_pane(self) -> ResultsPane:
         return self.query_one(ResultsPane)
+
+    @property
+    def recover_pane(self) -> RecoverPane:
+        return self.query_one(RecoverPane)
 
     # -- run orchestration -----------------------------------------------------
 
@@ -178,6 +193,49 @@ class PySanitizeApp(App[None]):
         self._log(f"✓ done in {result.duration_s:.1f}s → {result.out_dir}")
         self._switch("results")
 
+    # -- recover orchestration ---------------------------------------------------
+
+    @on(Button.Pressed, "#recover-btn")
+    def start_recover(self) -> None:
+        """Validate the ⑥ Recover input, then restore on a worker thread."""
+        target = self.recover_pane.file_path()
+        if target is None:
+            self._error("Pick a sanitized document on the ⑥ Recover tab first.")
+            return
+        if not target.is_file():
+            self._error(f"No such document: {target}")
+            return
+
+        self.recover_pane.set_running(True)
+        self._switch("run")
+        self._log(f"▶ recover {target.name}")
+        self._recover_worker(
+            target,
+            audit_path=self.recover_pane.audit_path(),
+            passphrase=self.recover_pane.passphrase(),
+        )
+
+    @work(exclusive=True, thread=True)
+    def _recover_worker(self, target: Path, *, audit_path: str | None, passphrase: str | None) -> None:
+        from pysanitize.recover import recover_file as _recover  # lazy: optional extra
+
+        try:
+            result = _recover(target, audit_path=audit_path, passphrase=passphrase)
+            error: Exception | None = None
+        except Exception as e:
+            result, error = None, e
+        self.call_from_thread(self._recover_finished, result, error)
+
+    def _recover_finished(self, result: RecoverResult | None, error: Exception | None) -> None:
+        self.recover_pane.set_running(False)
+        if error is not None:
+            self._error(f"Recovery failed: {error}")
+            return
+        self._log(
+            f"✓ recovered ({result.kind}) → {result.output} · restored "
+            f"{result.restored}, unresolved {result.unresolved}"
+        )
+
     # -- quit ---------------------------------------------------------------------
 
     @on(Button.Pressed, "#quit-btn")
@@ -205,4 +263,13 @@ class PySanitizeApp(App[None]):
                 self.options_pane.query_one("#file-input", Input).value = str(path)
 
         start = self.options_pane.file_path() or Path.home()
+        self.push_screen(_FileBrowser(start.parent if start.is_file() else start), _set)
+
+    @on(Button.Pressed, "#recover-browse")
+    def _recover_browse(self) -> None:
+        def _set(path: Path | None) -> None:
+            if path is not None:
+                self.recover_pane.query_one("#recover-file", Input).value = str(path)
+
+        start = self.recover_pane.file_path() or Path.home()
         self.push_screen(_FileBrowser(start.parent if start.is_file() else start), _set)

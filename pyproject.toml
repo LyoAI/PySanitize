@@ -46,6 +46,10 @@ render-office = ["python-docx", "openpyxl"]
 # PingAn intranet gateway (--provider pingan): pulls in pycryptodome for the
 # gateway's RSA/HMAC signing (pysanitize/llm/provider/pingan.py).
 llm-pingan = ["pycryptodome"]
+# Reversible masking (`--recoverable` / `pysanitize --recover`): AES-256-GCM
+# tokens via pysanitize/recover. Without it, --recoverable fails fast instead
+# of silently producing unrecoverable output.
+recover = ["cryptography>=42"]
 
 [project.scripts]
 pysanitize = "pysanitize.cli:main"

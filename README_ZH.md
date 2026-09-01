@@ -25,6 +25,7 @@
 | 🔍 **规则 + LLM 双引擎** | 正则+词典启发式（离线可用）；LLM 只做**定位**不重写，回匹配防幻觉 |
 | 🖼️ **图片脱敏** | `face` / 任意 YOLO 类别（检测模型），**以及按文字**：裸 `--image-text` 打码图片里全部印刷文字，或传字段列表只打码命中的敏感字段（如印章上的公司名）→ 马赛克 |
 | 📄 **PDF 打码** | `--redact-pdf` 产出保留排版的 `redacted.pdf` —— 敏感字符**真删除**后盖马赛克，表格边框保留 |
+| 🔁 **可恢复脱敏** | `--recoverable` 把每个敏感值的密文记入 `audit.json`；`pysanitize --recover` 用口令还原原始文档——脱敏文档本身与普通脱敏结果完全一致 |
 | 🔌 **供应商可切换** | `--provider openai \| pingan`，内网/外网一键切换 |
 | 📊 **审计友好** | 公开摘要不含原文；含原文报告 `--audit` 才生成 |
 | 🛡️ **容错优先** | 缺 key / 缺可选依赖 / 模型下载失败 → 降级警告，绝不硬崩 |
@@ -39,6 +40,7 @@
   → [image]       按类别（人脸/YOLO）+ 按文字（OCR → 全部文字或命中字段）→ PIL 马赛克
   → [redact]      （仅 PDF，可选）offset → 页面矩形 → redacted.pdf（真删字 + 马赛克）
   → 输出  sanitized.md + images_masked/ + audit.json
+                  （--recoverable：audit.json 额外记录密文 → 可用 --recover 还原）
 ```
 
 ## 📦 安装
@@ -69,6 +71,7 @@ LLM_TIMEOUT_S=180         # 单次 LLM 请求超时（秒）
 uv sync --extra image-yolo      # YOLO 通用目标检测（ultralytics）
 uv sync --extra image-ocr       # OCR 文字区域检测（paddleocr，体积较大）
 uv sync --extra tui             # 交互式 TUI 前端（textual）
+uv sync --extra recover         # 可恢复脱敏（--recoverable / --recover；cryptography）
 ```
 
 ## 🚀 快速开始
@@ -97,6 +100,12 @@ uv run pysanitize 样例.pdf --redact-pdf --redaction-style block   # 纯色块�
 
 # 6) 按字段的图片脱敏：OCR 图片，只打码命中的字段
 uv run pysanitize 样例.pdf --mask-images --image-text company_name,address
+
+# 7) 可恢复脱敏 + 还原（需 --extra recover）
+uv run pysanitize 样例.pdf --recoverable
+#    → 产出与普通脱敏一致；密文记在 audit.json 里
+uv run pysanitize output/样例/sanitized.md --recover          # md 精确还原
+uv run pysanitize output/样例/redacted.pdf --recover          # pdf：值还原，排版近似
 ```
 
 每次运行产出一个任务目录（默认 `output/<文档名>/`）：
@@ -106,7 +115,9 @@ output/<文档名>/
 ├── sanitized.md            # 脱敏后的 Markdown（图片链接指向 images_masked/）
 ├── images_masked/          # 每张抽取图——打码副本；未打码时即原图
 ├── redacted.pdf            # 仅 PDF 输入 + --redact-pdf：保留原排版，敏感区域真删字 + 马赛克
-└── audit.json              # 公开审计摘要：字段命中数 + 掩码后文本，不含敏感原文
+├── audit.json              # 公开审计摘要：字段命中数 + 掩码后文本，不含敏感原文
+│                             --recoverable 时额外记录每个 span 的密文与位置
+└── .recover.key            # --recoverable 且未传口令时自动生成的口令文件（0600）
 ```
 
 `--audit` 时额外生成 `sensitive_report.json`（含字段**原文**与字符偏移，用于本地人工复核，**不要外发**）。命令行未指定的参数全部回退到 `config/pipeline.yaml`；指定后命令行优先。
@@ -118,7 +129,7 @@ uv sync --extra tui        # 一次性安装 Textual
 uv run pysanitize --launch tui
 ```
 
-五页签终端界面（基于 Textual）：**① 字段** — 从 `config/fields.yaml` 勾选要检测的敏感字段类型；**② 选项** — 输入文件、检测模式、LLM 端点、输出；**③ 图片** — 图片脱敏目标（开关、类别列表、全部文字开关、检测器），以及一个「与正文一致」开关，可另选（可更大的）字段集用于 OCR 图片内检测；**④ 运行** — 自由输入自定义要求（会追加到 LLM 提示词），点击运行并实时查看日志；**⑤ 结果** — 各字段命中数与输出路径。退出：点击右上角 **✕ Quit** 按钮或按 `ctrl+c`（默认的 `ctrl+q` 会被部分终端吞掉，mac 的 `cmd+q` 则属于系统）。命令行仍是主入口，TUI 只是同一流水线（`pysanitize.core.run_sanitizer`）之上的便捷层。
+六页签终端界面（基于 Textual）：**① 字段** — 从 `config/fields.yaml` 勾选要检测的敏感字段类型；**② 选项** — 输入文件、检测模式、LLM 端点、输出，外加 **可还原** 开关与密码式 **还原密钥** 输入框（留空 = 环境变量 / `.recover.key` / 自动生成）；**③ 图片** — 图片脱敏目标（开关、类别列表、全部文字开关、检测器），以及一个「与正文一致」开关，可另选（可更大的）字段集用于 OCR 图片内检测；**④ 运行** — 自由输入自定义要求（会追加到 LLM 提示词），点击运行并实时查看日志；**⑤ 结果** — 各字段命中数与输出路径；**⑥ 还原** — 指向 `sanitized.md` / `redacted.pdf`（其 `audit.json` 就在旁边），可选填还原密钥，即可替代 CLI 的 `--recover` 完成还原。退出：点击右上角 **✕ Quit** 按钮或按 `ctrl+c`（默认的 `ctrl+q` 会被部分终端吞掉，mac 的 `cmd+q` 则属于系统）。命令行仍是主入口，TUI 只是同一流水线（`pysanitize.core.run_sanitizer`）之上的便捷层。
 
 ## 🐍 Python API
 
@@ -137,6 +148,8 @@ result = sanitize_document(
     redact_pdf=True,            # 可选：PDF 输入额外产出 redacted.pdf
     redaction_style="mosaic",   # mosaic | block
     audit=False,
+    recoverable=True,           # audit.json 记录密文供 --recover 还原（需 recover extra）
+    recover_key="passphrase",   # 缺省读 $PY_SANITIZE_RECOVER_KEY，或自动生成 .recover.key
 )
 print(result.sanitized_md)     # Path
 print(result.redacted_pdf)     # Path | None（PDF 输入且有可解析区域时）
@@ -220,6 +233,33 @@ uv run pysanitize 合同.pdf --mask-images --image-text company_name,address   #
 
 MinerU 只能**读** PDF —— 没有写入能力，重新渲染会丢字体/表格线/背景，而且仍需要一个 writer。PyMuPDF 是唯一既能读又能忠实重写（真删字）的依赖。它采用 **AGPL 许可**：内部工具没问题，但要把 PySanitize 嵌入闭源产品前请先评估。
 
+## 🔁 可恢复脱敏（`--recoverable` / `--recover`）
+
+默认掩码不可逆。加 `--recoverable`（需 `uv sync --extra recover`）后，脱敏文档**与普通脱敏结果完全一致**——占位符就是你配置的正常掩码（`138****5678`、`***`…）——但每个敏感值的密文会被记入 `audit.json`，之后凭口令即可还原原文。加密为 AES-256-GCM，密钥由口令经 scrypt 派生；同一值在一次运行中始终得到同一密文。
+
+```bash
+uv run pysanitize 样例.pdf --recoverable                        # 口令自动生成到 output/<文档>/.recover.key
+uv run pysanitize 样例.pdf --recoverable --recover-key s3cret   # 或显式传口令
+PY_SANITIZE_RECOVER_KEY=s3cret uv run pysanitize 样例.pdf --recoverable   # 或走环境变量
+
+# 之后还原 —— audit.json 必须与文件同目录（或用 --recover-audit 指定）：
+uv run pysanitize output/样例/sanitized.md --recover
+uv run pysanitize output/样例/redacted.pdf --recover --recover-key s3cret
+```
+
+audit 里记录了什么（仅 recoverable 模式）：
+
+- **`recovery` 块** —— 算法、KDF 名称、scrypt 盐与参数、密文格式。盐是公开参数；**密钥材料绝不入 audit**。拿到口令即可还原，拿不到则无能为力。
+- **每个 span 额外字段**：`encrypted_value`（`ENC(v1:…)` 密文——`masked_value` 仍是正常占位符）、`start`/`end`（原文偏移）、`md`（占位符在 `sanitized.md` 中的区间）、`rects`（PDF 中被打码的矩形）。
+
+还原方式：
+
+- **Markdown 精确还原** —— 解密值按记录的 `md` 区间拼接回去（每次拼接都先校验该区间仍是占位符，文档若被改动只会计为 unresolved，不会拼错文本）。
+- **PDF 尽力还原** —— 原字符在脱敏时已真删除；还原时清掉记录的 `rects` 区域、以自适应字号重新插入解密值：**值**回来了，原排版回不来。**图片不可恢复**（马赛克天然破坏性）。
+- 还原是独立消费者（`pysanitize/recover/`）：从不 import 脱敏流水线——只依赖 audit 与口令；且**绝不生成密钥**——找不到口令就报错。
+
+> ⚠️ `--recoverable` 模式下 **`audit.json` 携带所有敏感值的密文**，其保密性等价于口令强度：只随文档发往允许还原的地方，并像保管数据一样保管 `.recover.key`（0600）。脱敏文档本身仍可像普通脱敏结果一样外发。
+
 ## ⚙️ LLM 供应商配置
 
 `--model` = `config/llm/<model>.yaml` 的文件名；`--provider` = 该 yaml 里的 **provider 段**（`openai:` / `pingan:`）。一个 yaml 可同时放多段，内网/外网切换只改 flag：
@@ -241,6 +281,7 @@ uv run pysanitize 合同.pdf --detector hybrid --provider pingan --model qwen3.6
 - **图片脱敏默认不启用**：必须显式指定 `--image-classes` 和/或 `--image-text`；裸 `--image-text` 打码图片中**所有**印刷文字
 - **长数字误报**（财务表格 18 位数字）：默认开校验位 + `bank_account` 默认关闭
 - **PyMuPDF 为 AGPL 许可** —— 仅用于 `redacted.pdf`；内部工具无碍，闭源分发前请评估
+- **`--recoverable` 把密文写进 `audit.json`** —— 脱敏文档仍可外发，但 audit 与 `.recover.key`（0600）须与数据同等保管
 - MinerU 首次运行会下载模型；`mineru[pipeline]` 依赖较重（torch/opencv）
 
 ## 🛠️ 开发
@@ -255,6 +296,7 @@ pysanitize/
 ├── detector/   rules / llm / registry（重叠消解）/ image（人脸 / YOLO 类别 / OCR 文字与按字段）
 ├── masker/     text（按 offset 掩码）/ image（马赛克）
 ├── redact/     offset → 页面矩形，PyMuPDF 打码 + 校验
+├── recover/    可逆令牌（AES-GCM + scrypt）与独立于流水线的还原
 ├── pipeline.py sanitize_document() 编排（唯一公共入口）
 ├── cli.py      argparse CLI
 ├── llm/        LLM 门面（openai / pingan 多 provider）

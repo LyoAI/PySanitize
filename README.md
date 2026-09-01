@@ -28,6 +28,7 @@ PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / scanned 
 | 🔍 **Rules + LLM dual engine** | regex + dictionary heuristics (offline-ready); the LLM only *locates*, never rewrites, with verbatim re-match against hallucination |
 | 🖼️ **Image masking** | `face` / any YOLO class (detection models) **and** text-driven — bare `--image-text` mosaics all printed text, or a field list mosaics only matching fields (e.g. a company name on a seal) → mosaic |
 | 📄 **PDF redaction** | `--redact-pdf` also yields a layout-preserving `redacted.pdf` — sensitive glyphs truly *deleted*, mosaic on top, table borders intact |
+| 🔁 **Reversible masking** | `--recoverable` records each value's ciphertext in `audit.json`; `pysanitize --recover` restores the original with the passphrase — the sanitized document itself looks like any normal run |
 | 🔌 **Switchable providers** | `--provider openai \| pingan`, flip between intranet/extranet |
 | 📊 **Audit-friendly** | public summary has no raw values; the raw-value report is only written with `--audit` |
 | 🛡️ **Fault-tolerant** | missing keys / optional deps / model downloads degrade with a warning, never a hard crash |
@@ -42,6 +43,7 @@ input(PDF/DOCX/Excel/scan)
   → [image]       class- (face/YOLO) + text-driven (OCR → all text or matching fields) → PIL mosaic
   → [redact]      (PDF only, opt-in) offsets → page rects → redacted.pdf (glyphs deleted, mosaic)
   → output        sanitized.md + images_masked/ + audit.json
+                  (--recoverable: audit.json also carries the ciphertext → restorable with --recover)
 ```
 
 ## 📦 Installation
@@ -72,6 +74,7 @@ Optional features, unlock on demand:
 uv sync --extra image-yolo      # YOLO general object detection (ultralytics)
 uv sync --extra image-ocr       # OCR text-region detection (paddleocr, large)
 uv sync --extra tui             # interactive TUI frontend (textual)
+uv sync --extra recover         # reversible masking (--recoverable / --recover; cryptography)
 ```
 
 ## 🚀 Quick start
@@ -100,6 +103,12 @@ uv run pysanitize sample.pdf --redact-pdf --redaction-style block   # solid box 
 
 # 6) Field-driven image masking: OCR the images, mask only the matching fields
 uv run pysanitize sample.pdf --mask-images --image-text company_name,address
+
+# 7) Reversible masking + restore (needs --extra recover)
+uv run pysanitize sample.pdf --recoverable
+#    → output looks like a normal run; audit.json records each value's ciphertext
+uv run pysanitize output/sample/sanitized.md --recover          # md restores exactly
+uv run pysanitize output/sample/redacted.pdf --recover          # pdf: values back, layout approximate
 ```
 
 Each run produces a job directory (default `output/<doc-name>/`):
@@ -109,7 +118,9 @@ output/<doc-name>/
 ├── sanitized.md            # sanitized Markdown (image links point into images_masked/)
 ├── images_masked/          # every extracted image — masked copies, or originals when masking is off
 ├── redacted.pdf            # PDF inputs with --redact-pdf: original layout, regions deleted + mosaiced
-└── audit.json              # public summary: hit counts + masked text, no raw values
+├── audit.json              # public summary: hit counts + masked text, no raw values
+│                             with --recoverable: also each span's ciphertext + position
+└── .recover.key            # with --recoverable: generated passphrase (0600) when none was supplied
 ```
 
 With `--audit`, an extra `sensitive_report.json` is written (raw values + char offsets, for local review — **do not share**). Any flag you don't pass falls back to `config/pipeline.yaml`; explicit flags win.
@@ -121,7 +132,7 @@ uv sync --extra tui        # one-time: installs Textual
 uv run pysanitize --launch tui
 ```
 
-A five-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, output; **③ Image** — image masking targets (enable, class list, all-text switch, detector) plus a "Same as text" toggle that lets you pick a different (possibly larger) field set to OCR inside images; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths. Quit with the ✕ button or `ctrl+c` (the default `ctrl+q` is swallowed by some terminals, and `cmd+q` belongs to macOS). The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
+A six-tab terminal UI (Textual): **Fields** — checkbox-select the sensitive field types from `config/fields.yaml`; **Options** — input file, detection mode, LLM endpoint, output, plus the **Recoverable** switch and a password-masked **Recovery key** (blank = env / `.recover.key` / auto-generate); **③ Image** — image masking targets (enable, class list, all-text switch, detector) plus a "Same as text" toggle that lets you pick a different (possibly larger) field set to OCR inside images; **Run** — type free-form requirements that are appended to the LLM prompt, then run with a live log; **Results** — per-field hit counts and output paths; **⑥ Recover** — point at a `sanitized.md` / `redacted.pdf` (its `audit.json` beside it), optionally type the passphrase, and restore the original in place of the CLI's `--recover`. Quit with the ✕ button or `ctrl+c` (the default `ctrl+q` is swallowed by some terminals, and `cmd+q` belongs to macOS). The plain CLI stays the primary interface — the TUI is a convenience layer over the same pipeline (`pysanitize.core.run_sanitizer`).
 
 ## 🐍 Python API
 
@@ -140,6 +151,8 @@ result = sanitize_document(
     redact_pdf=True,            # opt-in: also write redacted.pdf for PDF sources
     redaction_style="mosaic",   # mosaic | block
     audit=False,
+    recoverable=True,           # audit.json records ciphertext for --recover (needs the recover extra)
+    recover_key="passphrase",   # else $PY_SANITIZE_RECOVER_KEY, else generated .recover.key
 )
 print(result.sanitized_md)     # Path
 print(result.redacted_pdf)     # Path | None (PDF sources with resolvable regions)
@@ -223,6 +236,33 @@ With `--redact-pdf`, the pipeline additionally writes `redacted.pdf` next to `sa
 
 MinerU only **reads** PDFs — it has no writer, so re-rendering would lose fonts, table lines and backgrounds and still need a writer. PyMuPDF is the only dependency that reads *and* faithfully rewrites a PDF (true glyph deletion). It is **AGPL-licensed**: fine for internal tooling, but review the implications before embedding PySanitize in a closed-source product.
 
+## 🔁 Recoverable masking (`--recoverable` / `--recover`)
+
+By default masking is one-way. With `--recoverable` (needs `uv sync --extra recover`), the sanitized document **looks exactly like a normal run** — same user-configured placeholders (`138****5678`, `***`, …) — but every value's ciphertext is recorded in `audit.json`, so the original can be restored later with the passphrase. Encryption is AES-256-GCM, keyed via scrypt from the passphrase; the same value always yields the same ciphertext within a run.
+
+```bash
+uv run pysanitize sample.pdf --recoverable                        # key generated into output/<doc>/.recover.key
+uv run pysanitize sample.pdf --recoverable --recover-key s3cret   # or pass a passphrase
+PY_SANITIZE_RECOVER_KEY=s3cret uv run pysanitize sample.pdf --recoverable   # or via the environment
+
+# restore later — audit.json must sit beside the file (or pass --recover-audit):
+uv run pysanitize output/sample/sanitized.md --recover
+uv run pysanitize output/sample/redacted.pdf --recover --recover-key s3cret
+```
+
+What the audit records (recovery mode only):
+
+- A `recovery` block — algorithm, KDF name, scrypt salt and parameters, ciphertext format. The salt is public by design; **key material never touches the audit**. Anyone holding the passphrase can recover; nobody without it can.
+- Per span: `encrypted_value` (the `ENC(v1:…)` ciphertext — `masked_value` stays the normal placeholder), `start`/`end` (offsets in the original text), `md` (where the placeholder sits in `sanitized.md`), and `rects` (the redacted PDF rectangles).
+
+How restoration works:
+
+- **Markdown restores exactly** — the decrypted value is spliced back at the recorded `md` range (each splice verifies the placeholder is still there, so an edited document counts as unresolved instead of corrupting text).
+- **PDF restores best-effort** — the original glyphs were truly deleted at sanitize time; recovery clears the recorded `rects` and re-inserts the decrypted value with a fitted font: the *values* come back, the original typography does not. **Images are not recoverable** (mosaicing is destructive by nature).
+- Recovery is an independent consumer (`pysanitize/recover/`): it never imports the sanitize pipeline — only the audit + passphrase — and it never invents a key: with no passphrase available it fails instead.
+
+> ⚠️ With `--recoverable`, **`audit.json` carries the ciphertext** of every sensitive value. Its secrecy reduces to passphrase strength: distribute it only where the document may be restored, and keep the generated `.recover.key` (0600) as confidential as the data itself. The sanitized document itself remains as shareable as any normal run.
+
 ## ⚙️ LLM provider config
 
 `--model` = filename of `config/llm/<model>.yaml`; `--provider` = a **provider section** in that yaml (`openai:` / `pingan:`). One yaml can hold several sections, so switching intranet/extranet is just a flag change:
@@ -244,6 +284,7 @@ uv run pysanitize contract.pdf --detector hybrid --provider pingan --model qwen3
 - **Image masking is off by default**: you must pass `--image-classes` and/or `--image-text`; bare `--image-text` mosaics **all** printed text in an image
 - **Long-number false positives** (18-digit figures in finance tables): checksums on by default + `bank_account` off by default
 - **PyMuPDF is AGPL-licensed** — used only for `redacted.pdf`; fine for internal tooling, review before closed-source distribution
+- **`--recoverable` puts ciphertext in `audit.json`** — the document stays shareable, but the audit + `.recover.key` (0600) must be guarded like the data itself
 - MinerU downloads models on first run; `mineru[pipeline]` is heavy (torch/opencv)
 
 ## 🛠️ Development
@@ -258,6 +299,7 @@ pysanitize/
 ├── detector/   rules / llm / registry (overlap resolution) / image (face / YOLO classes / OCR text & field-driven)
 ├── masker/     text (offset masking) / image (mosaic)
 ├── redact/     offsets → page rects, PyMuPDF redaction + verification
+├── recover/    reversible tokens (AES-GCM + scrypt) and pipeline-independent restoration
 ├── pipeline.py sanitize_document() orchestration (the only public entry)
 ├── cli.py      argparse CLI
 ├── llm/        LLM facade (openai / pingan providers)

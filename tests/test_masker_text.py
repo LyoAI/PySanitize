@@ -49,6 +49,20 @@ def test_overlapping_spans_merge_not_double_mask():
     assert out == "****"
 
 
+def test_partial_overlap_masks_uncovered_tail():
+    # Regression: a span partially overlapping an already-masked one used to
+    # have its uncovered tail *deleted* from the output ("AAAA***B"). The
+    # tail must be masked instead — no character may vanish. (``resolve``
+    # merges overlaps upstream; this guards direct masker callers.)
+    text = "AAAA13812345678BBBB"
+    dets = [
+        D("phone", text[4:15], 4, 15),
+        D("person_name", text[10:18], 10, 18),  # overlaps [10,15), extends to 18
+    ]
+    out = mask_text(text, dets, SPECS)
+    assert out == "AAAA138****5678***B"  # tail "BBB" masked, not dropped
+
+
 def test_masked_value_filled_for_audit():
     text = "电话 13812345678"
     i = text.index("13812345678")

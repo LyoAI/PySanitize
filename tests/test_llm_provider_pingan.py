@@ -58,3 +58,28 @@ def test_invoke_failure_sets_error_channel(monkeypatch):
     assert resp.error == "gateway down"
     assert resp.content is None
     assert resp.finish_reason == "error"
+
+
+def test_invoke_accepts_and_forwards_response_format(monkeypatch):
+    """Regression: invoke() lacked ``response_format`` — the detector passes it
+    on every call, so PingAn runs died with a TypeError before reaching the wire."""
+    provider = _make_provider(monkeypatch)
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        message = types.SimpleNamespace(
+            content='{"findings": []}', tool_calls=None, reasoning_content=None
+        )
+        choice = types.SimpleNamespace(message=message, finish_reason="stop")
+        usage = types.SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return types.SimpleNamespace(choices=[choice], usage=usage)
+
+    monkeypatch.setattr(provider.client.chat.completions, "create", fake_create)
+    resp = provider.invoke(
+        [{"role": "user", "content": "hi"}],
+        response_format={"type": "json_object"},
+    )
+    assert resp.error is None
+    assert resp.content == '{"findings": []}'
+    assert captured["response_format"] == {"type": "json_object"}

@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from pysanitize.config import (
@@ -30,9 +30,9 @@ from pysanitize.detector.registry import DetectionRegistry
 from pysanitize.detector.rules import RuleDetector
 from pysanitize.detector.specs import MaskSpec, load_field_specs, select_specs
 from pysanitize.masker.image import ImageMasker
-from pysanitize.masker.text import TextMasker
+from pysanitize.masker.text import Placements, mask_text, mask_text_placed
 from pysanitize.parser.blocks import META_TYPES
-from pysanitize.parser.document import parse_document
+from pysanitize.parser.document import ParsedDocument, parse_document
 from pysanitize.redact import Redaction, resolve_rects, verify_redaction
 from pysanitize.redact import redact_pdf as _write_redacted_pdf  # param name shadows the import
 from pysanitize.report import AuditInfo, write_audit, write_sensitive_report
@@ -83,6 +83,8 @@ def sanitize_document(
     redact_pdf: bool | None = None,       # None → config output.redact_pdf
     redaction_style: str | None = None,   # mosaic | block (None → config)
     audit: bool | None = None,            # None → config output.audit
+    recoverable: bool | None = None,      # None → config output.recoverable
+    recover_key: str | None = None,       # passphrase; else env PY_SANITIZE_RECOVER_KEY / .recover.key
     verify_checksums: bool | None = None,
     out_dir: str | Path | None = None,    # job output root (default OUT_DIR/<stem>)
     mineru_backend: str | None = None,
@@ -111,6 +113,15 @@ def sanitize_document(
             Off unless passed true (CLI ``--redact-pdf``) or enabled in config.
         redaction_style: ``mosaic`` (pixelated) or ``block`` (solid box).
         audit: additionally write ``sensitive_report.json`` with raw values.
+        recoverable: make the run reversible — the document keeps the normal
+            placeholder, while audit.json additionally records each value's
+            AES-GCM ciphertext and its position (md range / PDF rects), so
+            ``pysanitize --recover`` can restore the originals (md exactly;
+            pdf best-effort). Needs the ``recover`` extra. The passphrase
+            comes from ``recover_key``, else ``PY_SANITIZE_RECOVER_KEY``,
+            else a key is generated into ``.recover.key`` inside the output
+            directory — audit.json carries only public cipher parameters.
+        recover_key: passphrase for the recovery cipher (see ``recoverable``).
         out_dir: where ``sanitized.md`` / ``images_masked/`` / ``audit.json``
             (and ``redacted.pdf``) go.
 
@@ -169,6 +180,9 @@ def sanitize_document(
         else int(mosaic_factor)
     )
     audit = output_cfg.get("audit", False) if audit is None else audit
+    recoverable = (
+        output_cfg.get("recoverable", False) if recoverable is None else recoverable
+    )
 
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     start = time.monotonic()
@@ -181,6 +195,25 @@ def sanitize_document(
     )
 
     # ---- text: detect + mask -------------------------------------------------
+    out_dir = Path(out_dir) if out_dir else (OUT_DIR / doc.doc_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Recovery mode needs the output directory first: an auto-generated key
+    # lands in .recover.key there (arg > env > existing keyfile > generate).
+    cipher = None
+    if recoverable:
+        from pysanitize.recover.crypto import KEYFILE_NAME, TokenCipher, obtain_passphrase
+
+        passphrase, generated = obtain_passphrase(recover_key, out_dir / KEYFILE_NAME)
+        if generated:
+            logger.info(
+                "recovery key written to %s/%s — keep it safe: the sanitized "
+                "output cannot be restored without it",
+                out_dir.name,
+                KEYFILE_NAME,
+            )
+        cipher = TokenCipher.from_passphrase(passphrase)
+
     specs = select_specs(load_field_specs(), fields)
     registry = DetectionRegistry()
     if detector in ("rules", "hybrid"):
@@ -195,14 +228,22 @@ def sanitize_document(
                 title_level_limit=title_level_limit,
             )
         )
-    detections = registry.detect(doc)
+    # LLM values match verbatim and may contain the "\n\n" separator between
+    # blocks; masking is per-block, so a straddling span would be skipped by
+    # both blocks and leak. Split such spans first — every piece then masks,
+    # audits and recovers exactly like any other detection.
+    detections = _split_straddling(doc, registry.detect(doc))
 
+    # Masking is identical in recovery mode: the document keeps the normal
+    # placeholder, and the ciphertext is recorded per span in the audit only.
     mask_map = {name: spec.mask for name, spec in specs.items()}
-    masked_text = TextMasker(mask_map).mask(doc.text, detections)
+    # One full-text pass so every detection carries its placeholder in
+    # ``masked_value`` (the audit / recovery bookkeeping reads it). sanitized.md
+    # itself is assembled per block in _build_markdown — block-relative offsets
+    # stay exact there, while this pass also covers spans straddling blocks.
+    mask_text(doc.text, detections, mask_map)
 
     # ---- images: copy under images_masked/ (mosaic on request) ----------------
-    out_dir = Path(out_dir) if out_dir else (OUT_DIR / doc.doc_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     image_specs = select_specs(load_field_specs(), image_fields)
     masked_images, image_names = _prepare_images(
@@ -220,18 +261,21 @@ def sanitize_document(
     )
 
     sanitized_md = out_dir / "sanitized.md"
-    sanitized_md.write_text(
-        _build_markdown(doc, detections, mask_map, image_names, out_dir),
-        encoding="utf-8",
-    )
+    md_text, md_places = _build_markdown(doc, detections, mask_map, image_names, out_dir)
+    sanitized_md.write_text(md_text, encoding="utf-8")
 
     # ---- PDF redaction: true glyph removal + mosaic, layout preserved --------
     redacted_pdf: Path | None = None
     redacted_pages = redaction_regions = 0
+    rects: list[Redaction] = []
     if doc.source_suffix == ".pdf" and doc_path.is_file():
         do_redact = (
             output_cfg.get("redact_pdf", False) if redact_pdf is None else redact_pdf
         )
+        if do_redact or cipher is not None:
+            # Also resolved in recovery mode (redaction off) so the audit can
+            # record each span's page rectangles for --recover.
+            rects = resolve_rects(doc, detections, doc.page_dimensions)
         if do_redact:
             style = (
                 output_cfg.get("redaction_style", "mosaic")
@@ -242,7 +286,6 @@ def sanitize_document(
                 raise ValueError(
                     f"redaction_style must be 'mosaic' or 'block', got {style!r}"
                 )
-            rects = resolve_rects(doc, detections, doc.page_dimensions)
             # Regions of images that were *actually* mosaiced are stamped back
             # so the PDF page matches the md's images_masked/.
             for img in doc.images:
@@ -275,6 +318,29 @@ def sanitize_document(
                     "has no geometry); skipping redacted.pdf"
                 )
 
+    rect_by_span: dict[tuple[int, int], list[list[float]]] = {}
+    for r in rects:
+        rect_by_span.setdefault((r.start, r.end), []).append(
+            [r.rect.x0, r.rect.y0, r.rect.x1, r.rect.y1]
+        )
+
+    # Recovery bookkeeping, keyed by the detection's original offsets: the
+    # ciphertext, where its placeholder sits in sanitized.md, and which page
+    # rectangles were redacted — everything --recover needs besides the key.
+    recover_spans: dict[tuple[int, int], dict] | None = None
+    if cipher is not None:
+        # Exact placeholder positions recorded while the markdown was built —
+        # a post-hoc search could match a look-alike string from the document.
+        md_ranges = md_places
+        recover_spans = {}
+        for d in detections:
+            entry: dict = {"encrypted_value": cipher.token(d.value)}
+            if (md_range := md_ranges.get((d.start, d.end))) is not None:
+                entry["md"] = md_range
+            if rect_by_span.get((d.start, d.end)):
+                entry["rects"] = rect_by_span[(d.start, d.end)]
+            recover_spans[(d.start, d.end)] = entry
+
     duration = time.monotonic() - start
     info = AuditInfo(
         doc_id=doc.doc_id,
@@ -292,6 +358,8 @@ def sanitize_document(
         redacted_pdf=redacted_pdf.name if redacted_pdf else None,
         redacted_pages=redacted_pages,
         redaction_regions=redaction_regions,
+        recovery=cipher.meta() if cipher else None,
+        recover_spans=recover_spans,
     )
     audit_path = write_audit(info, out_dir)
     sensitive_path = write_sensitive_report(info, out_dir) if audit else None
@@ -420,14 +488,41 @@ def _near_full_page(img, page_dims, threshold: float = 0.8) -> bool:
     return img.bbox.width / pw > threshold and img.bbox.height / ph > threshold
 
 
+def _split_straddling(
+    doc: ParsedDocument, detections: list[Detection]
+) -> list[Detection]:
+    """Split detections that cross block boundaries into per-block pieces.
+
+    ``sanitized.md`` is masked block by block, so a span straddling two blocks
+    (an LLM value matching verbatim across the ``"\\n\\n"`` separator) would be
+    skipped by *both* blocks and leak verbatim. Each piece is clamped inside
+    one block; the audit then records one entry per piece and recovery stays
+    exact. Rule hits never straddle (``\\n`` is a boundary char); this guards
+    the LLM path.
+    """
+    out: list[Detection] = []
+    for d in detections:
+        blocks = doc.span(d.start, d.end)
+        if len(blocks) <= 1:
+            out.append(d)
+            continue
+        for b in blocks:
+            start, end = max(d.start, b.char_start), min(d.end, b.char_end)
+            if end > start:
+                out.append(
+                    replace(d, value=doc.text[start:end], start=start, end=end)
+                )
+    return out
+
+
 def _build_markdown(
     doc,
     detections: list[Detection],
     mask_map: dict[str, MaskSpec],
     image_names: dict[str, Path],
     out_dir: Path,
-) -> str:
-    """Assemble sanitized.md block by block.
+) -> tuple[str, dict[tuple[int, int], list[int]]]:
+    """Assemble sanitized.md block by block, recording exact placeholder spans.
 
     Text blocks are masked with *block-relative* offsets: fixed-length masks
     (e.g. ``****``) change the total string length, so offsets into a globally
@@ -437,29 +532,62 @@ def _build_markdown(
     every extracted image has a local copy there (mosaiced or original);
     image blocks whose extracted file is missing are skipped, never linked to a
     path that doesn't exist.
-    """
-    from pysanitize.masker.text import mask_text
 
+    Returns ``(markdown, places)``: ``places`` maps each detection's global
+    ``(start, end)`` span to the ``[out_start, out_end)`` range its placeholder
+    occupies in the built markdown. Positions are recorded *while building* —
+    never searched for afterwards — so a look-alike string from the document
+    (e.g. a literal ``***``) can never be mistaken for a placeholder.
+    Detections in dropped blocks get no entry: their placeholder does not exist.
+    """
     parts: list[str] = []
+    places: dict[tuple[int, int], list[int]] = {}
+    md_pos = 0  # where the part being appended starts in "\n\n".join(parts)
+
+    def record(
+        pairs: list[tuple[Detection, int, int]],
+        seg_places: Placements,
+        base: int,
+        shift: int,
+    ) -> None:
+        """Lift block-relative placements (+``shift``) into md coordinates."""
+        for d, rel_start, rel_end in pairs:
+            if (hit := seg_places.get((rel_start, rel_end))) is not None:
+                places[(d.start, d.end)] = [
+                    base + shift + hit[0],
+                    base + shift + hit[1],
+                ]
+
     for block in doc.blocks:
         if block.type in META_TYPES:
             continue
-        block_dets = [
-            Detection(
-                field_type=d.field_type,
-                value=d.value,
-                start=d.start - block.char_start,
-                end=d.end - block.char_start,
-                page=d.page,
-                source=d.source,
-                confidence=d.confidence,
+        pairs = [
+            (
+                d,
+                d.start - block.char_start,
+                d.end - block.char_start,
             )
             for d in detections
             if block.char_start <= d.start and d.end <= block.char_end
         ]
-        seg = mask_text(block.text, block_dets, mask_map)
+        block_dets = [
+            Detection(
+                field_type=d.field_type,
+                value=d.value,
+                start=rel_start,
+                end=rel_end,
+                page=d.page,
+                source=d.source,
+                confidence=d.confidence,
+            )
+            for d, rel_start, rel_end in pairs
+        ]
+        seg, seg_places = mask_text_placed(block.text, block_dets, mask_map)
+        prefix_len = 0
         if block.type == "title" and block.level:
-            seg = f"{'#' * block.level} {seg}"
+            prefix = f"{'#' * block.level} "
+            seg = prefix + seg
+            prefix_len = len(prefix)
         if block.image_path is not None and (block.type in IMAGE_TYPES or not seg.strip()):
             target = image_names.get(block.image_path.name)
             if target is None:
@@ -467,8 +595,15 @@ def _build_markdown(
             rel = Path(os.path.relpath(target, out_dir)).as_posix()
             caption = seg.strip()
             link = f"![{caption}]({rel})" if caption else f"![]({rel})"
+            # The caption sits after "![" and loses seg's leading whitespace;
+            # seg_places are pre-prefix coordinates, hence prefix_len too.
+            lead = len(seg) - len(seg.lstrip())
+            record(pairs, seg_places, md_pos, shift=2 + prefix_len - lead)
             parts.append(link)
+            md_pos += len(link) + 2
             continue
         if seg.strip():
+            record(pairs, seg_places, md_pos, shift=prefix_len)
             parts.append(seg)
-    return "\n\n".join(parts)
+            md_pos += len(seg) + 2
+    return "\n\n".join(parts), places

@@ -6,6 +6,8 @@ Usage::
     pysanitize sample.pdf --detector hybrid            # + LLM-located spans
     pysanitize sample.pdf --mask-images                # + face mosaic on images
     pysanitize sample.pdf --fields person_name,phone --audit
+    pysanitize sample.pdf --recoverable                # reversible masking
+    pysanitize output/sample/sanitized.md --recover    # restore the original
     pysanitize --launch tui                            # interactive TUI
     pysanitize sanitize sample.pdf                     # legacy alias, still works
 
@@ -31,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  pysanitize sample.pdf --detector hybrid --fields phone,person_name\n"
             "  pysanitize sample.pdf --mask-images --image-classes face --audit\n"
             "  pysanitize sample.pdf --redact-pdf --redaction-style block\n"
+            "  pysanitize sample.pdf --recoverable        # reversible tokens\n"
+            "  pysanitize output/sample/sanitized.md --recover\n"
             "  pysanitize --launch tui\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -96,6 +100,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit", dest="audit", action="store_true",
                         help="also write sensitive_report.json with raw values (local audit)")
     parser.set_defaults(audit=None)
+    parser.add_argument("--recoverable", dest="recoverable", action="store_true",
+                        help=(
+                            "make the run reversible: the document keeps its "
+                            "normal placeholder while audit.json records each "
+                            "value's ciphertext + position, so --recover can "
+                            "restore it (needs the 'recover' extra)"
+                        ))
+    parser.set_defaults(recoverable=None)
+    parser.add_argument(
+        "--recover-key", dest="recover_key",
+        help=(
+            "recovery passphrase (otherwise PY_SANITIZE_RECOVER_KEY env, or a "
+            "key is generated into .recover.key in the output directory; "
+            "avoid this flag in shared shells — the value lands in history)"
+        ),
+    )
+    parser.add_argument("--recover", dest="recover", action="store_true",
+                        help=(
+                            "restore a sanitized document: <file> is the "
+                            "sanitized.md / redacted.pdf, audit.json must sit "
+                            "beside it (or pass --recover-audit)"
+                        ))
+    parser.add_argument(
+        "--recover-audit", dest="recover_audit",
+        help="audit.json to recover from (default: audit.json next to <file>)",
+    )
     parser.add_argument("--redact-pdf", dest="redact_pdf", action="store_true",
                         help="also write a layout-preserving redacted.pdf for PDF inputs (off by default)")
     parser.set_defaults(redact_pdf=None)
@@ -182,6 +212,8 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         redact_pdf=args.redact_pdf,
         redaction_style=args.redaction_style,
         audit=args.audit,
+        recoverable=args.recoverable,
+        recover_key=args.recover_key,
         out_dir=args.out_dir,
         mineru_backend=args.mineru_backend,
         lang=args.lang,
@@ -197,6 +229,27 @@ def _run_sanitize(args: argparse.Namespace) -> int:
     print(f"  Audit report: {result.audit_path}")
     if result.sensitive_report_path:
         print(f"  Sensitive-value report: {result.sensitive_report_path}")
+    return 0
+
+
+def _run_recover(args: argparse.Namespace) -> int:
+    from pysanitize.recover import recover_file  # lazy: optional extra
+
+    result = recover_file(
+        args.file,
+        audit_path=args.recover_audit,
+        passphrase=args.recover_key,
+    )
+    print(f"Recovered document: {result.output}")
+    print(
+        f"  Restored values {result.restored} · unresolved spans "
+        f"{result.unresolved} ({result.kind})"
+    )
+    if result.unresolved:
+        print(
+            "  unresolved = audit.json spans that could not be placed back "
+            "(document edited after sanitizing? ciphertext undecryptable?)"
+        )
     return 0
 
 
@@ -239,7 +292,7 @@ def main(argv: list[str] | None = None) -> None:
 
     _set_log_level(args)
     try:
-        rc = _run_sanitize(args)
+        rc = _run_recover(args) if args.recover else _run_sanitize(args)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         rc = 130

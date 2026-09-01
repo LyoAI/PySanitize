@@ -39,8 +39,8 @@ def run_sanitizer(
             ``fields``, ``llm_model``, ``llm_provider``, ``mask_images``,
             ``image_classes``, ``image_fields``, ``image_backend``,
             ``image_model_path``, ``score_threshold``, ``mosaic_factor``,
-            ``redact_pdf``, ``redaction_style``, ``audit``, ``out_dir``,
-            ``mineru_backend``, ``lang``.
+            ``redact_pdf``, ``redaction_style``, ``audit``, ``recoverable``,
+            ``recover_key``, ``out_dir``, ``mineru_backend``, ``lang``.
 
     Returns:
         :class:`pysanitize.pipeline.SanitizeResult`.

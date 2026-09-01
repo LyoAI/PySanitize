@@ -22,6 +22,24 @@ def _count_by_field(detections: list[Detection]) -> dict[str, int]:
     return counts
 
 
+def _mask_span(info: AuditInfo, d: Detection) -> dict:
+    """One ``masked_spans`` entry; recovery mode adds ciphertext + positions."""
+    span = {
+        "field_type": d.field_type,
+        "page": d.page,
+        "source": d.source,
+        "masked_value": d.masked_value,
+    }
+    if info.recovery:
+        # ``masked_value`` stays the document placeholder; the recovery data
+        # adds the ciphertext plus where to splice it back (md range / PDF
+        # rects) — everything --recover needs besides the passphrase.
+        span.update(info.recover_spans.get((d.start, d.end), {}))
+        span["start"] = d.start
+        span["end"] = d.end
+    return span
+
+
 @dataclass
 class AuditInfo:
     """Everything the reporters need about one sanitize run."""
@@ -42,6 +60,11 @@ class AuditInfo:
     redacted_pdf: str | None = None  # filename under out_dir, or None
     redacted_pages: int = 0
     redaction_regions: int = 0
+    # Recovery mode only: the cipher parameter block (never key material) and
+    # per-span recovery data — ciphertext + placeholder range in sanitized.md
+    # + redacted PDF rectangles — keyed by the detection's original offsets.
+    recovery: dict | None = None
+    recover_spans: dict[tuple[int, int], dict] | None = None
 
 
 def write_audit(info: AuditInfo, out_dir: Path) -> Path:
@@ -67,17 +90,11 @@ def write_audit(info: AuditInfo, out_dir: Path) -> Path:
             "pages": info.redacted_pages,
             "regions": info.redaction_regions,
         },
-        # Only masked values appear here — the raw spans go to the opt-in
-        # sensitive_report.json.
-        "masked_spans": [
-            {
-                "field_type": d.field_type,
-                "page": d.page,
-                "source": d.source,
-                "masked_value": d.masked_value,
-            }
-            for d in info.detections
-        ],
+        # Recovery mode: cipher parameters (salt is public; the key never is).
+        **({"recovery": info.recovery} if info.recovery else {}),
+        # Placeholders only — raw values go to the opt-in sensitive_report.json;
+        # in recovery mode each span also carries its ciphertext (encrypted_value).
+        "masked_spans": [_mask_span(info, d) for d in info.detections],
         "timing": {
             "started_at": info.started_at,
             "duration_s": round(info.duration_s, 3),
