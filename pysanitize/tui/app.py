@@ -44,15 +44,6 @@ _PANE = {
 }
 
 
-def _recover_siblings(target: Path) -> list[Path]:
-    """The other artifact of the same job: ``sanitized.md`` ↔ ``redacted.pdf``."""
-    if target.name == "sanitized.md":
-        return [target.with_name("redacted.pdf")]
-    if target.name == "redacted.pdf":
-        return [target.with_name("sanitized.md")]
-    return []
-
-
 class _FileBrowser(ModalScreen[Path | None]):
     """Minimal modal file picker (DirectoryTree); dismisses with the pick or Cancel."""
 
@@ -229,27 +220,21 @@ class PySanitizeApp(App[None]):
         from pysanitize.recover import recover_file as _recover  # lazy: optional extra
 
         try:
-            results = [_recover(target, audit_path=audit_path, passphrase=passphrase)]
-            # A job produces both sanitized.md and (for PDFs) redacted.pdf —
-            # recovering one should restore the sibling too, not leave it out.
-            for sibling in _recover_siblings(target):
-                if sibling.is_file():
-                    results.append(_recover(sibling, audit_path=audit_path, passphrase=passphrase))
+            result = _recover(target, audit_path=audit_path, passphrase=passphrase)
             error: Exception | None = None
         except Exception as e:
-            results, error = [], e
-        self.call_from_thread(self._recover_finished, results, error)
+            result, error = None, e
+        self.call_from_thread(self._recover_finished, result, error)
 
-    def _recover_finished(self, results: list[RecoverResult], error: Exception | None) -> None:
+    def _recover_finished(self, result: RecoverResult | None, error: Exception | None) -> None:
         self.recover_pane.set_running(False)
         if error is not None:
             self._error(f"Recovery failed: {error}")
             return
-        for result in results:
-            self._log(
-                f"✓ recovered ({result.kind}) → {result.output} · restored "
-                f"{result.restored}, unresolved {result.unresolved}"
-            )
+        self._log(
+            f"✓ recovered ({result.kind}) → {result.output} · restored "
+            f"{result.restored}, unresolved {result.unresolved}"
+        )
 
     # -- quit ---------------------------------------------------------------------
 

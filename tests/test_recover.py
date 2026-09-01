@@ -667,15 +667,6 @@ def test_cli_recover_dispatch(monkeypatch, capsys):
     assert "Recovered document" in out and "unresolved spans 1" in out
 
 
-def test_recover_siblings_finds_the_other_artifact(tmp_path):
-    from pysanitize.tui.app import _recover_siblings
-
-    out = tmp_path / "out"
-    assert _recover_siblings(out / "sanitized.md") == [out / "redacted.pdf"]
-    assert _recover_siblings(out / "redacted.pdf") == [out / "sanitized.md"]
-    assert _recover_siblings(out / "sanitized_recovered.md") == []  # no recursion
-
-
 def test_tui_recoverable_switch():
     from textual.widgets import Switch
 
