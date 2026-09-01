@@ -125,6 +125,87 @@ def test_recovery_never_generates_a_key(tmp_path, monkeypatch):
         obtain_passphrase(None, tmp_path / ".recover.key", allow_generate=False)
 
 
+def test_explicit_key_materialized_into_keyfile(tmp_path, monkeypatch):
+    # Sanitize always persists the *effective* key: an explicit --recover-key
+    # is written into .recover.key (0600), so recovery only needs that file.
+    monkeypatch.setenv(ENV_KEY, "from-env")
+    keyfile = tmp_path / ".recover.key"
+    secret, generated = obtain_passphrase("s3cret", keyfile)
+    assert (secret, generated) == ("s3cret", False)
+    assert keyfile.read_text(encoding="utf-8").strip() == "s3cret"
+    assert keyfile.stat().st_mode & 0o777 == 0o600
+
+
+def test_env_key_materialized_into_keyfile(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV_KEY, raising=False)
+    monkeypatch.setenv(ENV_KEY, "from-env")
+    keyfile = tmp_path / ".recover.key"
+    secret, generated = obtain_passphrase(None, keyfile)
+    assert (secret, generated) == ("from-env", False)
+    assert keyfile.read_text(encoding="utf-8").strip() == "from-env"
+
+
+def test_recovery_never_writes_a_keyfile(tmp_path, monkeypatch):
+    # Recovery is read-only: even an explicitly passed key must not create or
+    # rewrite .recover.key — a keyfile can only ever be (re)written by sanitize.
+    monkeypatch.delenv(ENV_KEY, raising=False)
+    keyfile = tmp_path / ".recover.key"
+    secret, generated = obtain_passphrase("recover-key", keyfile, allow_generate=False)
+    assert (secret, generated) == ("recover-key", False)
+    assert not keyfile.exists()
+
+
+def test_sanitize_override_rewrites_stale_keyfile(tmp_path, monkeypatch):
+    # A stale keyfile from a previous run is overwritten when a higher-priority
+    # source (env, then arg) supplies a different key, keeping .recover.key in
+    # sync with the key this run actually encrypted with.
+    monkeypatch.setenv(ENV_KEY, "from-env")
+    keyfile = tmp_path / ".recover.key"
+    keyfile.write_text("stale\n")
+    obtain_passphrase(None, keyfile)
+    assert keyfile.read_text(encoding="utf-8").strip() == "from-env"
+
+
+def test_pipeline_persists_key_and_recovery_reads_keyfile(
+    make_doc, monkeypatch, tmp_path
+):
+    """End-to-end: however the sanitize-time key was supplied (explicit, env,
+    or generated), `.recover.key` is materialized beside the output and
+    `--recover` with no passphrase restores from it."""
+    from pysanitize import pipeline as pl
+
+    doc = make_doc([("paragraph", "联系人：张三", 1)])
+    monkeypatch.setattr(pl, "parse_document", lambda *a, **k: doc)
+
+    for source in ("explicit", "env", "generated"):
+        out = tmp_path / f"out-{source}"
+        monkeypatch.delenv(ENV_KEY, raising=False)
+        if source == "explicit":
+            r = pl.sanitize_document(
+                "doc.pdf", detector="rules", fields=["person_name"],
+                recoverable=True, recover_key=PASSPHRASE, out_dir=out,
+            )
+        elif source == "env":
+            monkeypatch.setenv(ENV_KEY, PASSPHRASE)
+            r = pl.sanitize_document(
+                "doc.pdf", detector="rules", fields=["person_name"],
+                recoverable=True, out_dir=out,
+            )
+        else:  # generated
+            r = pl.sanitize_document(
+                "doc.pdf", detector="rules", fields=["person_name"],
+                recoverable=True, out_dir=out,
+            )
+        keyfile = out / ".recover.key"
+        assert keyfile.is_file(), f"{source}: keyfile not materialized"
+        assert keyfile.stat().st_mode & 0o777 == 0o600
+
+        # recovery with no passphrase (and env cleared) reads .recover.key
+        monkeypatch.delenv(ENV_KEY, raising=False)
+        recovered = recover_file(r.sanitized_md).output.read_text(encoding="utf-8")
+        assert recovered == "联系人：张三", f"{source}: recovery from keyfile failed"
+
+
 # ---- placeholder locating (exact, recorded while building) -------------------
 
 

@@ -117,7 +117,7 @@ output/<文档名>/
 ├── redacted.pdf            # 仅 PDF 输入 + --redact-pdf：保留原排版，敏感区域真删字 + 马赛克
 ├── audit.json              # 公开审计摘要：字段命中数 + 掩码后文本，不含敏感原文
 │                             --recoverable 时额外记录每个 span 的密文与位置
-└── .recover.key            # --recoverable 且未传口令时自动生成的口令文件（0600）
+└── .recover.key            # --recoverable 时生效口令文件（0600），始终落盘
 ```
 
 `--audit` 时额外生成 `sensitive_report.json`（含字段**原文**与字符偏移，用于本地人工复核，**不要外发**）。命令行未指定的参数全部回退到 `config/pipeline.yaml`；指定后命令行优先。
@@ -149,7 +149,7 @@ result = sanitize_document(
     redaction_style="mosaic",   # mosaic | block
     audit=False,
     recoverable=True,           # audit.json 记录密文供 --recover 还原（需 recover extra）
-    recover_key="passphrase",   # 缺省读 $PYSANITIZE_RECOVER_KEY，或自动生成 .recover.key
+    recover_key="passphrase",   # 缺省读 $PYSANITIZE_RECOVER_KEY，或自动生成；生效密钥写入 .recover.key
 )
 print(result.sanitized_md)     # Path
 print(result.redacted_pdf)     # Path | None（PDF 输入且有可解析区域时）
@@ -238,18 +238,22 @@ MinerU 只能**读** PDF —— 没有写入能力，重新渲染会丢字体/�
 默认掩码不可逆。加 `--recoverable`（需 `uv sync --extra recover`）后，脱敏文档**与普通脱敏结果完全一致**——占位符就是你配置的正常掩码（`138****5678`、`***`…）——但每个敏感值的密文会被记入 `audit.json`，之后凭口令即可还原原文。加密为 AES-256-GCM，密钥由口令经 scrypt 派生；同一值在一次运行中始终得到同一密文。
 
 ```bash
-uv run pysanitize 样例.pdf --recoverable                        # 口令自动生成到 output/<文档>/.recover.key
-uv run pysanitize 样例.pdf --recoverable --recover-key s3cret   # 或显式传口令
-PYSANITIZE_RECOVER_KEY=s3cret uv run pysanitize 样例.pdf --recoverable   # 或走环境变量
+uv run pysanitize 样例.pdf --recoverable                        # 口令自动生成 → 写入 .recover.key
+uv run pysanitize 样例.pdf --recoverable --recover-key s3cret   # 显式口令 → 同样写入 .recover.key
+PYSANITIZE_RECOVER_KEY=s3cret uv run pysanitize 样例.pdf --recoverable   # 环境变量 → 同样写入 .recover.key
 
-# 之后还原 —— audit.json 必须与文件同目录（或用 --recover-audit 指定）：
+# 之后还原 —— audit.json 必须与文件同目录（或用 --recover-audit 指定）；
+# --recover 只读 output/<文档>/.recover.key，无需回忆密钥当初怎么传的：
 uv run pysanitize output/样例/sanitized.md --recover
-uv run pysanitize output/样例/redacted.pdf --recover --recover-key s3cret
+uv run pysanitize output/样例/redacted.pdf --recover
+uv run pysanitize output/样例/redacted.pdf --recover --recover-key s3cret   # 显式覆盖仍可用
 ```
+
+无论口令当初以哪种方式传入，**脱敏时都会把生效密钥写入 `output/<文档>/.recover.key`（0600）**——不管来自 `--recover-key`、`$PYSANITIZE_RECOVER_KEY` 还是自动生成——于是 `.recover.key` 成为唯一事实来源，还原只需读它。
 
 audit 里记录了什么（仅 recoverable 模式）：
 
-- **`recovery` 块** —— 算法、KDF 名称、scrypt 盐与参数、密文格式。盐是公开参数；**密钥材料绝不入 audit**。拿到口令即可还原，拿不到则无能为力。
+- **`recovery` 块** —— 算法、KDF 名称、scrypt 盐与参数、密文格式。盐是公开参数；**密钥材料绝不入 audit**（它只存在 `.recover.key` 里）。拿到口令（或密钥文件）即可还原，拿不到则无能为力。
 - **每个 span 额外字段**：`encrypted_value`（`ENC(v1:…)` 密文——`masked_value` 仍是正常占位符）、`start`/`end`（原文偏移）、`md`（占位符在 `sanitized.md` 中的区间）、`rects`（PDF 中被打码的矩形）。
 
 还原方式：

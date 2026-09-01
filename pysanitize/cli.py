@@ -112,7 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--recover-key", dest="recover_key",
         help=(
             "recovery passphrase (otherwise PYSANITIZE_RECOVER_KEY env, or a "
-            "key is generated into .recover.key in the output directory; "
+            "generated one); whichever way, the effective key is stored in "
+            ".recover.key beside the audit — --recover only reads that file; "
             "avoid this flag in shared shells — the value lands in history)"
         ),
     )

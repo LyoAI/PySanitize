@@ -121,7 +121,7 @@ output/<doc-name>/
 ├── redacted.pdf            # PDF inputs with --redact-pdf: original layout, regions deleted + mosaiced
 ├── audit.json              # public summary: hit counts + masked text, no raw values
 │                             with --recoverable: also each span's ciphertext + position
-└── .recover.key            # with --recoverable: generated passphrase (0600) when none was supplied
+└── .recover.key            # with --recoverable: the effective passphrase (0600), always materialized
 ```
 
 With `--audit`, an extra `sensitive_report.json` is written (raw values + char offsets, for local review — **do not share**). Any flag you don't pass falls back to `config/pipeline.yaml`; explicit flags win.
@@ -153,7 +153,7 @@ result = sanitize_document(
     redaction_style="mosaic",   # mosaic | block
     audit=False,
     recoverable=True,           # audit.json records ciphertext for --recover (needs the recover extra)
-    recover_key="passphrase",   # else $PYSANITIZE_RECOVER_KEY, else generated .recover.key
+    recover_key="passphrase",   # else $PYSANITIZE_RECOVER_KEY, else generated — effective key → .recover.key
 )
 print(result.sanitized_md)     # Path
 print(result.redacted_pdf)     # Path | None (PDF sources with resolvable regions)
@@ -242,18 +242,22 @@ MinerU only **reads** PDFs — it has no writer, so re-rendering would lose font
 By default masking is one-way. With `--recoverable` (needs `uv sync --extra recover`), the sanitized document **looks exactly like a normal run** — same user-configured placeholders (`138****5678`, `***`, …) — but every value's ciphertext is recorded in `audit.json`, so the original can be restored later with the passphrase. Encryption is AES-256-GCM, keyed via scrypt from the passphrase; the same value always yields the same ciphertext within a run.
 
 ```bash
-uv run pysanitize sample.pdf --recoverable                        # key generated into output/<doc>/.recover.key
-uv run pysanitize sample.pdf --recoverable --recover-key s3cret   # or pass a passphrase
-PYSANITIZE_RECOVER_KEY=s3cret uv run pysanitize sample.pdf --recoverable   # or via the environment
+uv run pysanitize sample.pdf --recoverable                          # key auto-generated into .recover.key
+uv run pysanitize sample.pdf --recoverable --recover-key s3cret     # ...also stored in .recover.key
+PYSANITIZE_RECOVER_KEY=s3cret uv run pysanitize sample.pdf --recoverable   # ...also stored in .recover.key
 
-# restore later — audit.json must sit beside the file (or pass --recover-audit):
+# restore later — audit.json must sit beside the file (or pass --recover-audit);
+# --recover just reads output/sample/.recover.key, no need to recall how the key was supplied:
 uv run pysanitize output/sample/sanitized.md --recover
-uv run pysanitize output/sample/redacted.pdf --recover --recover-key s3cret
+uv run pysanitize output/sample/redacted.pdf --recover
+uv run pysanitize output/sample/redacted.pdf --recover --recover-key s3cret   # explicit override still works
 ```
+
+However the passphrase is provided, the **effective key is always written to `output/<doc>/.recover.key` (0600)** at sanitize time — whether it came from `--recover-key`, `$PYSANITIZE_RECOVER_KEY`, or a fresh auto-generated draw — so `.recover.key` is the single source of truth and recovery only ever reads that file.
 
 What the audit records (recovery mode only):
 
-- A `recovery` block — algorithm, KDF name, scrypt salt and parameters, ciphertext format. The salt is public by design; **key material never touches the audit**. Anyone holding the passphrase can recover; nobody without it can.
+- A `recovery` block — algorithm, KDF name, scrypt salt and parameters, ciphertext format. The salt is public by design; **key material never touches the audit** (it lives in `.recover.key`). Anyone holding the passphrase (or the keyfile) can recover; nobody without it can.
 - Per span: `encrypted_value` (the `ENC(v1:…)` ciphertext — `masked_value` stays the normal placeholder), `start`/`end` (offsets in the original text), `md` (where the placeholder sits in `sanitized.md`), and `rects` (the redacted PDF rectangles).
 
 How restoration works:
@@ -262,7 +266,7 @@ How restoration works:
 - **PDF restores best-effort** — the original glyphs were truly deleted at sanitize time; recovery clears the recorded `rects` and re-inserts the decrypted value with a fitted font: the *values* come back, the original typography does not. **Images are not recoverable** (mosaicing is destructive by nature).
 - Recovery is an independent consumer (`pysanitize/recover/`): it never imports the sanitize pipeline — only the audit + passphrase — and it never invents a key: with no passphrase available it fails instead.
 
-> ⚠️ With `--recoverable`, **`audit.json` carries the ciphertext** of every sensitive value. Its secrecy reduces to passphrase strength: distribute it only where the document may be restored, and keep the generated `.recover.key` (0600) as confidential as the data itself. The sanitized document itself remains as shareable as any normal run.
+> ⚠️ With `--recoverable`, **`audit.json` carries the ciphertext** of every sensitive value. Its secrecy reduces to passphrase strength: distribute it only where the document may be restored, and keep `.recover.key` (0600) as confidential as the data itself. The sanitized document itself remains as shareable as any normal run.
 
 ## ⚙️ LLM provider config
 

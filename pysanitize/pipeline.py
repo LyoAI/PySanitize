@@ -119,8 +119,10 @@ def sanitize_document(
             ``pysanitize --recover`` can restore the originals (md exactly;
             pdf best-effort). Needs the ``recover`` extra. The passphrase
             comes from ``recover_key``, else ``PYSANITIZE_RECOVER_KEY``,
-            else a key is generated into ``.recover.key`` inside the output
-            directory — audit.json carries only public cipher parameters.
+            else one is generated — whichever way, the effective key is
+            materialized into ``.recover.key`` inside the output directory
+            (audit.json carries only public cipher parameters), so
+            ``--recover`` just reads that file.
         recover_key: passphrase for the recovery cipher (see ``recoverable``).
         out_dir: where ``sanitized.md`` / ``images_masked/`` / ``audit.json``
             (and ``redacted.pdf``) go.
@@ -198,8 +200,10 @@ def sanitize_document(
     out_dir = Path(out_dir) if out_dir else (OUT_DIR / doc.doc_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Recovery mode needs the output directory first: an auto-generated key
-    # lands in .recover.key there (arg > env > existing keyfile > generate).
+    # Recovery mode needs the output directory first. Whatever way the key was
+    # supplied (arg > env > existing keyfile > generate), the *effective* key is
+    # materialized into .recover.key (0600), so --recover only ever reads that
+    # file.
     cipher = None
     if recoverable:
         from pysanitize.recover.crypto import KEYFILE_NAME, TokenCipher, obtain_passphrase

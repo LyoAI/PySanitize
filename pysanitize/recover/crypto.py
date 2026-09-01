@@ -7,9 +7,11 @@ the original back. The same value always maps to the same ciphertext within
 a run.
 
 The KDF is stdlib ``hashlib.scrypt``; only the AEAD needs the optional
-``cryptography`` package (the ``recover`` extra). Key material NEVER touches
-disk: the audit stores just the scrypt salt and parameters (public), so
-anyone holding the passphrase can recover.
+``cryptography`` package (the ``recover`` extra). Key material never lives in
+the audit: it stores only the scrypt salt and parameters (public), so anyone
+holding the passphrase can recover. The passphrase itself is materialized in
+the run's ``.recover.key`` (0600) — every ``--recoverable`` run writes the
+effective key there, whichever way it was supplied, so recovery just reads it.
 """
 
 from __future__ import annotations
@@ -73,28 +75,33 @@ def obtain_passphrase(
 ) -> tuple[str, bool]:
     """Resolve the recovery passphrase: arg > env > keyfile > generate.
 
-    Returns ``(passphrase, generated)``. The keyfile lives beside the run's
-    audit with 0600 permissions; with ``allow_generate=False`` a missing key
-    is an error instead of a newly minted key (recovery must never invent one).
+    Returns ``(passphrase, generated)`` — ``generated`` is True only when a new
+    key was minted. On the sanitize path (``allow_generate=True``) the *effective*
+    key is always materialized into ``keyfile`` (0600, beside the audit), whether
+    it came from the flag, the environment or a fresh draw, so ``.recover.key``
+    is the single source of truth for ``--recover`` — no need to remember how
+    the key was supplied. With ``allow_generate=False`` (recovery) the keyfile
+    is never created or rewritten: a missing key is an error, never an invented
+    one, and an explicitly passed key is used as-is.
     """
     if explicit:
-        return explicit, False
-    env = os.environ.get(ENV_KEY)
-    if env:
-        return env, False
-    if keyfile.is_file():
-        secret = keyfile.read_text(encoding="utf-8").strip()
-        if secret:
-            return secret, False
-    if not allow_generate:
+        secret, generated = explicit, False
+    elif env := os.environ.get(ENV_KEY):
+        secret, generated = env, False
+    elif keyfile.is_file() and (existing := keyfile.read_text(encoding="utf-8").strip()):
+        return existing, False  # already materialized — reuse as-is
+    elif allow_generate:
+        secret, generated = secrets.token_urlsafe(24), True
+    else:
         raise ValueError(
             f"no recovery passphrase: pass it explicitly, set {ENV_KEY}, "
             f"or keep {keyfile.name} beside audit.json"
         )
-    secret = secrets.token_urlsafe(24)
-    keyfile.write_text(secret + "\n", encoding="utf-8")
-    keyfile.chmod(0o600)
-    return secret, True
+    if allow_generate:
+        keyfile.parent.mkdir(parents=True, exist_ok=True)
+        keyfile.write_text(secret + "\n", encoding="utf-8")
+        keyfile.chmod(0o600)
+    return secret, generated
 
 
 class TokenCipher:
