@@ -42,8 +42,6 @@ LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "180"))
 # MinerU local backend; the CLI picks the device. "pipeline" runs on CPU,
 # "vlm-engine"/"hybrid-engine" need a GPU.
 MINERU_BACKEND = os.getenv("MINERU_BACKEND", "pipeline")
-# Directory under the output root that holds MinerU's parse artifacts.
-MINERU_OUT_DIRNAME = "md"
 
 FIELDS_CONFIG = CONFIG_DIR / "fields.yaml"
 PIPELINE_CONFIG = CONFIG_DIR / "pipeline.yaml"

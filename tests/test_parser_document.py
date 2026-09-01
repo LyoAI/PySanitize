@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from pysanitize.config import CACHE_DIR
+from pysanitize.parser.document import _default_mineru_out
+
+
+def test_default_mineru_out_keys_by_source_folder():
+    # Same-named files in different folders never share a parse cache: the
+    # default root is .cache/<source parent folder name>/.
+    doc = Path("upload_materials/sq200503211112/年报.pdf")
+    assert _default_mineru_out(doc) == CACHE_DIR / "sq200503211112"
+    # A file in the CWD (no parent folder name) falls back to "root".
+    assert _default_mineru_out(Path("年报.pdf")) == CACHE_DIR / "root"
+
 
 def test_text_joins_nonmeta_blocks(make_doc):
     doc = make_doc([

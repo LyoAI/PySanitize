@@ -57,6 +57,11 @@ class OptionsPane(VerticalScroll):
         with Horizontal(classes="field-row"):
             yield Label("Out dir")
             yield Input(placeholder="output/<doc-name>/", id="out-dir")
+        with Horizontal(classes="field-row"):
+            yield Label("MinerU out")
+            yield Input(
+                placeholder=".cache/<source-folder>/", id="mineru-out-dir"
+            )
 
     # -- parameter collection --------------------------------------------------
 
@@ -75,6 +80,7 @@ class OptionsPane(VerticalScroll):
             "recoverable": self.query_one("#recoverable", Switch).value or None,
             "recover_key": self.query_one("#recover-key", Input).value.strip() or None,
             "out_dir": self.query_one("#out-dir", Input).value.strip(),
+            "mineru_out_dir": self.query_one("#mineru-out-dir", Input).value.strip(),
         }
 
     def file_path(self) -> Path | None:

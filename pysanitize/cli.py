@@ -139,6 +139,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--mineru-backend", dest="mineru_backend",
         help="MinerU backend (pipeline/vlm-engine/hybrid-engine; default MINERU_BACKEND from .env)",
     )
+    parser.add_argument(
+        "--mineru-out-dir", dest="mineru_out_dir",
+        help=(
+            "MinerU parse output root (default .cache/<source folder name>/ — "
+            "same-named files in different folders stay separate)"
+        ),
+    )
     parser.add_argument("--lang", default="ch", help="OCR language (default ch)")
     verb = parser.add_mutually_exclusive_group()
     verb.add_argument("-v", "--verbose", action="store_true", help="DEBUG logging")
@@ -217,6 +224,7 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         recover_key=args.recover_key,
         out_dir=args.out_dir,
         mineru_backend=args.mineru_backend,
+        mineru_out_dir=args.mineru_out_dir,
         lang=args.lang,
     )
     print(f"Output directory: {result.out_dir}")
@@ -227,6 +235,12 @@ def _run_sanitize(args: argparse.Namespace) -> int:
     )
     if result.redacted_pdf:
         print(f"  Redacted PDF: {result.redacted_pdf}")
+    if result.redaction_leftovers:
+        pages = ",".join(str(p) for p in sorted({p for _, p in result.redaction_leftovers}))
+        print(
+            f"  ⚠ {len(result.redaction_leftovers)} sensitive values still "
+            f"present in redacted.pdf (pages {pages})"
+        )
     print(f"  Audit report: {result.audit_path}")
     if result.sensitive_report_path:
         print(f"  Sensitive-value report: {result.sensitive_report_path}")

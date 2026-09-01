@@ -93,6 +93,23 @@ def test_redact_pdf_block_style(tmp_path, make_doc):
     assert "13812345678" not in "\n".join(p.get_text() for p in pymupdf.open(out))
 
 
+def test_verify_redaction_reports_page_and_dedupes(tmp_path):
+    # A surviving value is reported once, with the first page it still appears
+    # on — even when the caller passes it multiple times.
+    src = tmp_path / "src.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "13812345678", fontsize=12, fontname="china-s")
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "keep 13900000000", fontsize=12, fontname="china-s")
+    doc.save(src)
+
+    leftovers = verify_redaction(
+        src, ["13812345678", "13812345678", "13900000000", "not there", "two words"]
+    )
+    assert leftovers == [("13812345678", 1), ("13900000000", 2)]
+
+
 def test_redact_pdf_skips_pages_without_rects(tmp_path, make_doc):
     # an untouched page must be copied byte-identical to the source region
     src = tmp_path / "src.pdf"

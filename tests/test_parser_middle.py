@@ -140,6 +140,32 @@ def test_table_alignment_retries_off_by_one():
     assert "| a |" in blocks[0].text
 
 
+def test_table_alignment_uses_geometry_when_positional_drifts():
+    # Three TOC placeholders push the table to raw index 3 — beyond the ±1
+    # retry — but the v2 record's bbox (the same para block, normalized to
+    # 0..1000) still matches geometrically.
+    middle = {
+        "pdf_info": [
+            _page(
+                [{"type": "index", "bbox": [0, 0, 10, 10]}] * 3
+                + [{"type": "table", "bbox": [0, 100, 300, 200], "blocks": []}]
+            )
+        ]
+    }
+    v2 = [
+        [
+            {
+                "type": "table",
+                "bbox": [0, 118, 504, 237],
+                "content": {"html": "<table><tr><td>x</td></tr></table>"},
+            }
+        ]
+    ]
+    blocks, _ = project_middle(middle, v2_pages=v2)
+    table = next(b for b in blocks if b.type == "table")
+    assert "| x |" in table.text
+
+
 def test_table_without_v2_match_keeps_caption():
     middle = {
         "pdf_info": [

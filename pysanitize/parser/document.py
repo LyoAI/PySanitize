@@ -11,7 +11,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pysanitize.config import CACHE_DIR, MINERU_BACKEND, MINERU_OUT_DIRNAME
+from pysanitize.config import CACHE_DIR, MINERU_BACKEND
 
 from .blocks import Block, ExtractedImage, META_TYPES
 from .mineru import parse_blocks, pair_images
@@ -108,6 +108,16 @@ def build_document(
     )
 
 
+def _default_mineru_out(path: Path) -> Path:
+    """MinerU parse root for one document: ``.cache/<source folder name>/``.
+
+    Keying by the source file's parent folder — rather than the file stem
+    alone — keeps same-named files in different folders from sharing a parse
+    cache.
+    """
+    return CACHE_DIR / (path.parent.name or "root")
+
+
 def parse_document(
     doc_path: str | Path,
     out_dir: Path | None = None,
@@ -120,7 +130,8 @@ def parse_document(
 
     Args:
         doc_path: PDF / image / docx / pptx / xlsx file.
-        out_dir: MinerU output root. Defaults to ``.cache/md``.
+        out_dir: MinerU output root. Defaults to ``.cache/<source folder>``
+            (see :func:`_default_mineru_out`).
         backend: MinerU backend ("pipeline" | "vlm-engine" | ...).
         lang: OCR language hint passed to ``mineru -l``.
         skip_existing: reuse on-disk parse output instead of re-running.
@@ -130,7 +141,7 @@ def parse_document(
         RuntimeError: MinerU failed or produced no parse output.
     """
     path = Path(doc_path)
-    out_dir = Path(out_dir) if out_dir is not None else (CACHE_DIR / MINERU_OUT_DIRNAME)
+    out_dir = Path(out_dir) if out_dir else _default_mineru_out(path)
     blocks, page_dimensions = parse_blocks(
         path, out_dir, backend=backend, lang=lang, skip_existing=skip_existing
     )

@@ -10,7 +10,7 @@ Primary source: ``pdf_info[].para_blocks``. Per-line geometry is projected into
 ``Block.line_boxes`` so both the PDF redactor and the image OCR field detector
 can map a char range onto page/image coordinates. Tables carry no cell text in
 middle (3.x: a placeholder span only), so their markdown is recovered by
-aligning back onto the v2 ``html`` (same per-page reading order).
+aligning back onto the v2 ``html`` (per-page geometry, positional retry).
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def project_middle(
             if isinstance(pb, dict)
         ]
         if v2_page:
-            _align_tables(raw, v2_page)
+            _align_tables(raw, v2_page, size)
         for b in raw:
             if b is None:
                 continue
@@ -229,19 +229,25 @@ def _table_caption(pb: dict) -> str:
     return "\n".join(parts)
 
 
-def _align_tables(raw_blocks: list[Block | None], v2_page: list) -> None:
-    """Recover table markdown from v2 records, aligned by per-page order.
+# Minimum normalized bbox overlap for a v2 record to count as the geometric
+# match for the middle table block it was built from.
+_IOU_MIN = 0.5
+
+
+def _align_tables(raw_blocks: list[Block | None], v2_page: list, page_size) -> None:
+    """Recover table markdown from v2 records.
 
     middle 3.x tables carry only a placeholder span (no cell text); the v2
-    ``html`` holds the cells. v2 and middle list blocks in the same page order,
-    so table #k lines up with v2 record #k — with a ±1 retry for the occasional
-    discarded/missing block. No match → caption-only fallback.
+    ``html`` holds the cells. Prefer a per-page geometric match — the v2 bbox
+    is the same para block normalized to 0..1000 — falling back to a positional
+    ±1 retry when geometry is missing. No match → caption-only fallback.
     """
     records = [r for r in v2_page if isinstance(r, dict)]
+    used: set[int] = set()
     for i, block in enumerate(raw_blocks):
         if block is None or block.type != "table":
             continue
-        html = _v2_table_html_at(records, i)
+        html = _v2_table_html(records, i, block, used, page_size)
         if html:
             block.text = html_table_to_markdown(html)
         else:
@@ -252,19 +258,63 @@ def _align_tables(raw_blocks: list[Block | None], v2_page: list) -> None:
             )
 
 
+def _v2_table_html(
+    records: list, i: int, block: Block, used: set[int], page_size
+) -> str:
+    """The v2 table ``html`` matching ``block``: geometric match first, then a
+    positional ±1 retry. Geometric matches consume their record (``used``).
+    """
+    nb = _normalized_bbox(block.bbox, page_size)
+    if nb is not None:
+        best, best_score = None, _IOU_MIN
+        for j, rec in enumerate(records):
+            if j in used or rec.get("type") != "table":
+                continue
+            rb = _normalized_bbox(_bbox(rec.get("bbox")), (1000.0, 1000.0))
+            if rb is None:
+                continue
+            score = _iou(nb, rb)
+            if score > best_score:
+                best, best_score = j, score
+        if best is not None:
+            html = _html(records[best])
+            if html:
+                used.add(best)
+                return html
+    return _v2_table_html_at(records, i)
+
+
 def _v2_table_html_at(records: list, i: int) -> str:
     """The ``html`` of a v2 ``table`` record near position ``i`` (±1 retry)."""
     for j in (i, i - 1, i + 1):
-        if not 0 <= j < len(records):
-            continue
-        rec = records[j]
-        if not isinstance(rec, dict) or rec.get("type") != "table":
-            continue
-        content = rec.get("content")
-        html = content.get("html") if isinstance(content, dict) else None
-        if isinstance(html, str) and html:
+        if 0 <= j < len(records) and (html := _html(records[j])):
             return html
     return ""
+
+
+def _html(rec) -> str:
+    """The cell ``html`` of one v2 table record (``""`` when absent)."""
+    if not isinstance(rec, dict) or rec.get("type") != "table":
+        return ""
+    content = rec.get("content")
+    html = content.get("html") if isinstance(content, dict) else None
+    return html if isinstance(html, str) else ""
+
+
+def _normalized_bbox(b: BBox | None, page_size) -> BBox | None:
+    """``b`` scaled to 0..1 relative to ``page_size`` (None when unusable)."""
+    if b is None or len(page_size) < 2 or page_size[0] <= 0 or page_size[1] <= 0:
+        return None
+    return b.normalized(float(page_size[0]), float(page_size[1]))
+
+
+def _iou(a: BBox, b: BBox) -> float:
+    """Intersection-over-union of two 0..1 bboxes."""
+    w = min(a.x1, b.x1) - max(a.x0, b.x0)
+    h = min(a.y1, b.y1) - max(a.y0, b.y0)
+    inter = max(w, 0.0) * max(h, 0.0)
+    union = a.width * a.height + b.width * b.height - inter
+    return inter / union if union else 0.0
 
 
 def _bbox(value) -> BBox | None:

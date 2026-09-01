@@ -63,6 +63,7 @@ class SanitizeResult:
     duration_s: float
     detector: str
     redacted_pdf: Path | None = None  # PDF sources only, when regions were found
+    redaction_leftovers: list[tuple[str, int]] = field(default_factory=list)
     fields: list[str] = field(default_factory=list)
 
 
@@ -88,6 +89,7 @@ def sanitize_document(
     verify_checksums: bool | None = None,
     out_dir: str | Path | None = None,    # job output root (default OUT_DIR/<stem>)
     mineru_backend: str | None = None,
+    mineru_out_dir: str | Path | None = None,  # parse cache root (default .cache/<source folder>)
     lang: str | None = None,
     skip_existing: bool = True,
 ) -> SanitizeResult:
@@ -191,6 +193,7 @@ def sanitize_document(
 
     doc = parse_document(
         doc_path,
+        out_dir=mineru_out_dir,
         backend=mineru_backend or MINERU_BACKEND,
         lang=lang or "ch",
         skip_existing=skip_existing,
@@ -271,6 +274,7 @@ def sanitize_document(
     # ---- PDF redaction: true glyph removal + mosaic, layout preserved --------
     redacted_pdf: Path | None = None
     redacted_pages = redaction_regions = 0
+    leftovers: list[tuple[str, int]] = []
     rects: list[Redaction] = []
     if doc.source_suffix == ".pdf" and doc_path.is_file():
         do_redact = (
@@ -308,13 +312,16 @@ def sanitize_document(
                 )
                 redacted_pages = len({r.page for r in rects})
                 redaction_regions = len(rects)
-                leftover = verify_redaction(redacted_pdf, [d.value for d in detections])
-                if leftover:
-                    logger.warning(
+                leftovers = verify_redaction(redacted_pdf, [d.value for d in detections])
+                if leftovers:
+                    pages = ",".join(str(p) for p in sorted({p for _, p in leftovers}))
+                    logger.error(
                         "redaction verification: %d sensitive values still present "
-                        "in %s (missing geometry? scanned page?)",
-                        len(leftover),
+                        "in %s (pages %s) — see sensitive_report.json "
+                        "redaction_leftovers",
+                        len(leftovers),
                         redacted_pdf.name,
+                        pages,
                     )
             elif detections:
                 logger.warning(
@@ -362,6 +369,7 @@ def sanitize_document(
         redacted_pdf=redacted_pdf.name if redacted_pdf else None,
         redacted_pages=redacted_pages,
         redaction_regions=redaction_regions,
+        redaction_leftovers=leftovers,
         recovery=cipher.meta() if cipher else None,
         recover_spans=recover_spans,
     )
@@ -387,6 +395,7 @@ def sanitize_document(
         images_total=len(doc.images),
         images_masked=len(masked_images),
         redacted_pdf=redacted_pdf,
+        redaction_leftovers=leftovers,
         duration_s=duration,
         detector=detector,
         fields=list(specs),

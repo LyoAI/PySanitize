@@ -8,7 +8,7 @@ only). ``sensitive_report.json`` is opt-in (``--audit``) and carries raw values
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pysanitize import __version__
@@ -60,6 +60,9 @@ class AuditInfo:
     redacted_pdf: str | None = None  # filename under out_dir, or None
     redacted_pages: int = 0
     redaction_regions: int = 0
+    # (value, first page) pairs still present in redacted.pdf after redaction —
+    # values go to sensitive_report.json only; audit.json carries just counts.
+    redaction_leftovers: list[tuple[str, int]] = field(default_factory=list)
     # Recovery mode only: the cipher parameter block (never key material) and
     # per-span recovery data — ciphertext + placeholder range in sanitized.md
     # + redacted PDF rectangles — keyed by the detection's original offsets.
@@ -89,6 +92,10 @@ def write_audit(info: AuditInfo, out_dir: Path) -> Path:
             "pdf": info.redacted_pdf,
             "pages": info.redacted_pages,
             "regions": info.redaction_regions,
+            # Raw-free: counts only — the leaked values+pages live in
+            # sensitive_report.json (raw artifact).
+            "leftover_count": len(info.redaction_leftovers),
+            "leftover_pages": sorted({p for _, p in info.redaction_leftovers}),
         },
         # Recovery mode: cipher parameters (salt is public; the key never is).
         **({"recovery": info.recovery} if info.recovery else {}),
@@ -123,6 +130,12 @@ def write_sensitive_report(info: AuditInfo, out_dir: Path) -> Path:
                 "masked_value": d.masked_value,
             }
             for d in info.detections
+        ],
+        # Sensitive values that survived redaction — the audit's raw-free
+        # counterpart carries only the counts.
+        "redaction_leftovers": [
+            {"value": value, "page": page}
+            for value, page in info.redaction_leftovers
         ],
     }
     out_dir.mkdir(parents=True, exist_ok=True)

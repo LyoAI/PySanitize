@@ -141,39 +141,85 @@ def _recover_pdf(pdf_path: Path, cipher: TokenCipher, audit: dict, out_path) -> 
             for r in span["rects"]:
                 page.add_redact_annot(pymupdf.Rect(*r))
         page.apply_redactions(images=2, graphics=0, text=0)
-        # …then write each decrypted value back into its first rectangle.
-        for span, value in zip(page_spans, values):
-            if value is None:
-                continue
-            _insert_fitted(page, pymupdf.Rect(*span["rects"][0]), value)
-            restored += 1
+        # …then write each decrypted value back. Values that share a rect (a
+        # table's cells all map to the whole-block bbox) are stacked top-down
+        # in reading order instead of overwriting each other.
+        restored += _insert_values(page, page_spans, values)
     target = _target_for(pdf_path, out_path)
     doc.save(target)
     unresolved = len(spans) - restored
     return RecoverResult(target, restored, unresolved, "pdf")
 
 
-def _insert_fitted(page, rect, value: str) -> None:
-    """Insert ``value`` into ``rect``, shrinking the font until it fits.
+def _insert_values(page, spans, values) -> int:
+    """Write decrypted ``values`` back beside their redacted rects.
 
-    ``china-s`` is pymupdf's built-in CJK font, so recovered Chinese values
-    render correctly. The size is bounded by the *estimated glyph width* —
-    CJK/full-width chars are ~1.0em, ASCII ~0.55em — so a long value on a wide
-    rect can never run past the page edge. (A flat ``1.55 / len`` estimate once
-    truncated recovered values: the last glyphs fell off the page and the
-    value came back incomplete.)
+    Font size follows the page's body text — a whole-table rect is tall, but a
+    masked cell's original size is the *cell* size, so sizing by the rect blows
+    the value up to fill the table. Values that share one rect (all cells of a
+    table map to its whole-block bbox) are stacked top-down in reading order
+    (``md`` position) so they never overwrite each other. Returns how many
+    values were written.
     """
     import pymupdf
 
-    def em(ch: str) -> float:
-        """Glyph width in ems: full-width (CJK, full-width punct) vs ASCII."""
-        return 1.0 if ord(ch) >= 0x2E80 else 0.55
+    groups: dict[tuple[float, ...], list[tuple[str, float]]] = {}
+    for span, value in zip(spans, values):
+        if value is None:
+            continue
+        key = tuple(round(c, 2) for c in span["rects"][0])
+        groups.setdefault(key, []).append((value, span.get("md", (0, 0))[0]))
+    written = 0
+    for key, members in groups.items():
+        members.sort(key=lambda m: m[1])  # reading order
+        rect = pymupdf.Rect(*key)
+        units = max((sum(_em(c) for c in v) for v, _ in members), default=1.0)
+        body = _body_fontsize(page, rect)
+        fontsize = max(
+            1.0,
+            min(
+                body or rect.height * 0.72,
+                rect.width * 0.96 / units,
+                rect.height / len(members) * 0.72,
+            ),
+        )
+        line_h = fontsize * 1.25
+        y = rect.y1 - fontsize * 0.25 if len(members) == 1 else rect.y0 + line_h
+        for value, _ in members:
+            page.insert_text(
+                pymupdf.Point(rect.x0 + 1, y),
+                value,
+                fontsize=fontsize,
+                fontname="china-s",
+            )
+            y += line_h
+            written += 1
+    return written
 
-    units = sum(em(ch) for ch in value) or 1.0
-    fontsize = max(1.0, min(rect.height * 0.72, rect.width * 0.96 / units))
-    page.insert_text(
-        pymupdf.Point(rect.x0 + 1, rect.y1 - rect.height * 0.18),
-        value,
-        fontsize=fontsize,
-        fontname="china-s",
-    )
+
+def _body_fontsize(page, rect) -> float | None:
+    """Median size of the page's text spans in ``rect``'s y-range (the page-wide
+    median when none overlap; None on an empty page)."""
+    import pymupdf
+
+    sizes, page_sizes = [], []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                size = span.get("size")
+                if not size:
+                    continue
+                page_sizes.append(size)
+                bbox = pymupdf.Rect(span["bbox"])
+                if bbox.y1 >= rect.y0 and bbox.y0 <= rect.y1:
+                    sizes.append(size)
+    pool = sizes or page_sizes
+    if not pool:
+        return None
+    pool.sort()
+    return pool[len(pool) // 2]
+
+
+def _em(ch: str) -> float:
+    """Glyph width in ems: full-width (CJK, full-width punct) vs ASCII."""
+    return 1.0 if ord(ch) >= 0x2E80 else 0.55

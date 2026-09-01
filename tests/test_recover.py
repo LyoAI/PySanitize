@@ -383,23 +383,81 @@ def test_recovery_is_character_exact_despite_placeholder_lookalikes(
     assert recovered == reference.sanitized_md.read_text(encoding="utf-8")
 
 
-def test_insert_fitted_long_value_never_runs_off_the_page(tmp_path):
+def test_recover_long_value_never_runs_off_the_page(tmp_path):
     """Regression: a flat ``width * 1.55 / len`` size estimate truncated long
     values on wide rects — the tail glyphs fell off the page edge and the
     recovered value came back incomplete (“一政策性银” without 行)."""
     import pymupdf
 
-    from pysanitize.recover.restore import _insert_fitted
+    from pysanitize.recover.restore import _insert_values
 
     doc = pymupdf.open()  # A4: 595 × 842
     page = doc.new_page()
-    rect = pymupdf.Rect(93, 184, 540, 396)  # a whole-block table bbox
-    _insert_fitted(page, rect, "一政策性银行")
+    rect = [93, 184, 540, 396]  # a whole-block table bbox
+    _insert_values(page, [{"rects": [rect]}], ["一政策性银行"])
     out = tmp_path / "fitted.pdf"
     doc.save(out)
 
     text = pymupdf.open(out)[0].get_text()
     assert "一政策性银行" in text  # complete — nothing clipped off the page
+
+
+def test_recover_font_follows_body_text_not_rect(tmp_path):
+    """A whole-table rect is tall and wide, but the value's real size is the
+    cell size — the font must track the page's body text, not the rect."""
+    import pymupdf
+
+    from pysanitize.recover.restore import _insert_values
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((100, 200), "普通文本", fontsize=12, fontname="china-s")
+    _insert_values(page, [{"rects": [[20, 300, 500, 500]]}], ["北京"])
+    out = tmp_path / "fitted.pdf"
+    doc.save(out)
+
+    sizes = [
+        s["size"]
+        for b in pymupdf.open(out)[0].get_text("dict")["blocks"]
+        for l in b.get("lines", [])
+        for s in l.get("spans", [])
+    ]
+    assert max(sizes) <= 14  # bounded by the 12pt body, not the 200pt-tall rect
+
+
+def test_recover_stacks_values_that_share_a_rect(tmp_path):
+    """Table cells all map to the whole-block bbox — values in the same rect
+    must stack top-down (reading order) instead of overwriting each other."""
+    import pymupdf
+
+    from pysanitize.recover.restore import _insert_values
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    rect = [50, 300, 400, 400]
+    _insert_values(
+        page,
+        [{"rects": [rect], "md": [0, 1]}, {"rects": [rect], "md": [4, 5]}],
+        ["张三", "李四"],
+    )
+    out = tmp_path / "fitted.pdf"
+    doc.save(out)
+
+    data = pymupdf.open(out)[0].get_text("dict")
+    tops = sorted(
+        l["bbox"][1]
+        for b in data["blocks"]
+        for l in b.get("lines", [])
+        if "".join(s["text"] for s in l.get("spans", []))
+    )
+    assert len(tops) == 2 and tops[1] > tops[0]  # two distinct lines, no overlap
+    text = "".join(
+        s["text"]
+        for b in data["blocks"]
+        for l in b.get("lines", [])
+        for s in l.get("spans", [])
+    )
+    assert "张三" in text and "李四" in text
 
 
 # ---- pipeline integration ----------------------------------------------------
@@ -607,6 +665,15 @@ def test_cli_recover_dispatch(monkeypatch, capsys):
     assert seen == {"file": "out/sanitized.md", "audit": None, "key": "k"}
     out = capsys.readouterr().out
     assert "Recovered document" in out and "unresolved spans 1" in out
+
+
+def test_recover_siblings_finds_the_other_artifact(tmp_path):
+    from pysanitize.tui.app import _recover_siblings
+
+    out = tmp_path / "out"
+    assert _recover_siblings(out / "sanitized.md") == [out / "redacted.pdf"]
+    assert _recover_siblings(out / "redacted.pdf") == [out / "sanitized.md"]
+    assert _recover_siblings(out / "sanitized_recovered.md") == []  # no recursion
 
 
 def test_tui_recoverable_switch():

@@ -124,17 +124,26 @@ def redact_pdf(
     return Path(out_path)
 
 
-def verify_redaction(out_path, values: list[str]) -> list[str]:
-    """Return which whitespace-free ``values`` still appear in the redacted PDF.
+def verify_redaction(out_path, values: list[str]) -> list[tuple[str, int]]:
+    """Which whitespace-free ``values`` still appear in the redacted PDF, as
+    ``(value, first page it appears on)`` deduped by value.
 
     Scanned documents have no text layer, so this is naturally a no-op there;
-    the caller downgrades leftovers to a warning, never a failure.
+    the caller logs leftovers loudly but never fails the run on them.
     """
     import pymupdf
 
     doc = pymupdf.open(out_path)
-    text = "\n".join(page.get_text() for page in doc)
-    return [v for v in values if v and not any(c.isspace() for c in v) and v in text]
+    wanted = {v for v in values if v and not any(c.isspace() for c in v)}
+    found: dict[str, int] = {}
+    for page in doc:
+        page_text = page.get_text()
+        if not page_text:
+            continue
+        for v in wanted:
+            if v not in found and v in page_text:
+                found[v] = page.number + 1
+    return sorted(found.items())
 
 
 def _rect(b: BBox):
