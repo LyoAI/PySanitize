@@ -24,7 +24,10 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        run: uv sync --frozen --extra tui   # tests/test_tui.py imports textual
+        # The full suite needs both the TUI extra (textual — test_tui.py) and the
+        # recover extra (cryptography — test_recover.py). The heavier image/office
+        # extras degrade gracefully in tests and are left out to keep runners lean.
+        run: uv sync --frozen --extra tui --extra recover
 
       - name: Run tests
         run: uv run pytest -q
