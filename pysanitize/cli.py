@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider", dest="llm_provider",
-        help="LLM provider = provider section in config/llm/<model>.yaml (openai | pingan, default openai)",
+        help="LLM provider = provider section in config/llm/<model>.yaml (default openai)",
     )
     parser.add_argument(
         "--mask-images", dest="mask_images", action="store_true",

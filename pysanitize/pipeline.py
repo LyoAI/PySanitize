@@ -73,7 +73,7 @@ def sanitize_document(
     detector: str | None = None,          # rules | llm | hybrid (config default)
     fields: list[str] | None = None,      # subset of field types to detect
     llm_model: str | None = None,         # LLM model (llm / hybrid)
-    llm_provider: str | None = None,      # provider section: openai | pingan (config/llm/<model>.yaml)
+    llm_provider: str | None = None,      # provider section in config/llm/<model>.yaml
     mask_images: bool | None = None,      # None → config image.enabled
     image_classes: list[str] | None = None,  # mask targets face|text|<yolo class>; empty = no masking
     image_fields: list[str] | None = None,   # field types to detect inside images (None → follow ``fields``)
@@ -101,7 +101,8 @@ def sanitize_document(
             spans), or ``hybrid`` (both, rules wins on ties).
         fields: restrict detection to these field types (default: all enabled).
         llm_provider: provider section in ``config/llm/<model>.yaml`` —
-            ``openai`` (default) or ``pingan``.
+            ``openai`` (default), or any section the yaml defines (e.g.
+            ``claude``, ``openrouter``).
         mask_images: also detect sensitive regions + mosaic the document's images.
         image_classes: what to mask in images — ``face``, ``text`` (OCR text
             regions), and/or YOLO class names. Empty means no image masking,

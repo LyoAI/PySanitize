@@ -158,10 +158,10 @@ def test_llm_provider_and_model_flow_to_detector(make_doc, monkeypatch, tmp_path
 
     monkeypatch.setattr(pl, "LLMDetector", FakeLLMDetector)
     pl.sanitize_document("doc.pdf", detector="hybrid",
-                         llm_model="qwen3.6-27b", llm_provider="pingan",
+                         llm_model="qwen3.6-27b", llm_provider="openai",
                          out_dir=tmp_path / "out")
     assert seen["model"] == "qwen3.6-27b"
-    assert seen["provider"] == "pingan"
+    assert seen["provider"] == "openai"
     assert seen["fields"] is None
     # chunking comes from config/pipeline.yaml, not the CLI
     assert seen["chunk_size"] == 6000

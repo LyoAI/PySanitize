@@ -87,10 +87,10 @@ def test_image_class_and_text_flags_map_to_pipeline_params():
 
 def test_provider_model_flags():
     args = build_parser().parse_args(
-        ["a.pdf", "--provider", "pingan", "--model", "qwen3.6-27b"]
+        ["a.pdf", "--provider", "openrouter", "--model", "deepseek-v4-flash"]
     )
-    assert args.llm_provider == "pingan"
-    assert args.llm_model == "qwen3.6-27b"
+    assert args.llm_provider == "openrouter"
+    assert args.llm_model == "deepseek-v4-flash"
 
 
 def test_launch_webui_reports_not_available(monkeypatch, capsys):

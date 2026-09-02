@@ -139,13 +139,16 @@ class OCRFieldDetector(ImageDetector):
         lines = _ocr_lines(self._ocr, image_path, self.confidence)
         if not lines:
             return []
-        text = "".join(t for t, _, _ in lines)
+        # Joined WITH the "\n" separator the offsets below account for — a
+        # separator-less join would drift every line after the first by one
+        # char per preceding line, shifting (or dropping) the mosaic boxes.
+        text = "\n".join(t for t, _, _ in lines)
         line_boxes: list[LineBox] = []
         offset = 0
         for t, box, _ in lines:
             if t:
                 line_boxes.append(LineBox(t, box, offset, offset + len(t)))
-            offset += len(t) + 1  # account for the implicit "\n" separator
+            offset += len(t) + 1  # the "\n" separator included above
         block = Block(
             block_id="img",
             type="paragraph",

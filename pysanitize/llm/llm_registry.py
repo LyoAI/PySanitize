@@ -1,15 +1,11 @@
 """LLM facade + factory, configured by per-model YAML.
 
 ``LLM(model_name, provider_type)`` reads ``config/llm/<model_name>.yaml`` and
-builds the provider under the ``provider_type`` key (``openai:`` / ``pingan:``).
-The agent talks only to ``LLM`` — never a provider directly — so the transport
-is swappable behind the shared ``LLMResponse`` interface. ``get_llm()`` is the
-thin factory equivalent of the constructor.
-
-Every provider call uses keyword arguments. Provider signatures legitimately
-differ — PingAn inserts ``max_context_len`` between the ABC's
-``max_completion_tokens`` and ``temperature`` — so positional binding would
-mis-route values; keywords make the facade immune to that.
+builds the provider under the ``provider_type`` key (``openai:``,
+``claude:``, ``openrouter:``, …). The agent talks only to ``LLM`` — never a
+provider directly — so the transport is swappable behind the shared
+``LLMResponse`` interface. ``get_llm()`` is the thin factory equivalent of the
+constructor.
 """
 
 from __future__ import annotations
@@ -46,7 +42,7 @@ class LLM:
                 f"have: {', '.join(cfg) or 'none'}"
             )
         self.model = section.get("model_name") or model_name
-        self.provider = _build_provider(provider_type, section, self.model)
+        self.provider = _build_provider(section, self.model)
 
     def invoke(
         self,
@@ -101,40 +97,14 @@ def _expand_env_vars(text: str) -> str:
     return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), text)
 
 
-def _build_provider(
-    provider_type: str, section: dict, default_model: str
-) -> LLMProvider:
-    if provider_type == "pingan":
-        return _pingan_provider(section, default_model)
-    # openai (or any other type a yaml defines): OpenAI-compatible.
+def _build_provider(section: dict, default_model: str) -> LLMProvider:
+    """Wrap an OpenAI-compatible provider for the selected yaml section.
+
+    Any provider section (``openai:`` / ``claude:`` / ``openrouter:`` / …) is
+    an OpenAI-compatible endpoint — the section key just names which one.
+    """
     return OpenAICompatProvider(
         api_key=section.get("api_key", ""),
         api_base=section.get("api_base", ""),
         default_model=default_model,
-    )
-
-
-def _pingan_provider(section: dict, default_model: str) -> LLMProvider:
-    #: PingAn intranet gateway creds read from the yaml's ``pingan`` section.
-    _PINGAN_CRED_KEYS = (
-        "appKey",
-        "appSecret",
-        "rsaPrivateKey",
-        "openApiCredential",
-        "sceneId",
-        "requestId",
-        "model_name",
-    )
-    # Guard fires before the lazy import, so a missing sceneId raises a clear
-    # error instead of a cryptic ``int('')`` ValueError from the provider.
-    if not section.get("sceneId"):
-        raise RuntimeError(
-            "pingan provider requires 'sceneId' in the config's pingan section"
-        )
-    from .provider import PingAnLLMProvider
-    return PingAnLLMProvider(
-        api_key=section.get("api_key", ""),
-        api_base=section.get("api_base", "http://localhost:8000/v1"),
-        default_model=default_model,
-        extra_headers={key: section[key] for key in _PINGAN_CRED_KEYS if section.get(key)},
     )

@@ -6,7 +6,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Version](https://img.shields.io/badge/version-0.2.0-4A90D9)
-![Tests](https://img.shields.io/badge/tests-143%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-194%20passed-brightgreen)
 ![Parse](https://img.shields.io/badge/parse-local%20MinerU-2E7D32)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -29,7 +29,7 @@ PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / scanned 
 | 🖼️ **Image masking** | `face` / any YOLO class (detection models) **and** text-driven — bare `--image-text` mosaics all printed text, or a field list mosaics only matching fields (e.g. a company name on a seal) → mosaic |
 | 📄 **PDF redaction** | `--redact-pdf` also yields a layout-preserving `redacted.pdf` — sensitive glyphs truly *deleted*, mosaic on top, table borders intact |
 | 🔁 **Reversible masking** | `--recoverable` records each value's ciphertext in `audit.json`; `pysanitize --recover` restores the original with the passphrase — the sanitized document itself looks like any normal run |
-| 🔌 **Switchable providers** | `--provider openai \| pingan`, flip between intranet/extranet |
+| 🔌 **Switchable providers** | `--provider openai \| claude \| openrouter`, pick a provider section per model yaml |
 | 📊 **Audit-friendly** | public summary has no raw values; the raw-value report is only written with `--audit` |
 | 🛡️ **Fault-tolerant** | missing keys / optional deps / model downloads degrade with a warning, never a hard crash |
 
@@ -87,9 +87,9 @@ uv run pysanitize sample.pdf
 # 2) Hybrid: rules + LLM locating (default openai/deepseek-v4-flash)
 uv run pysanitize sample.pdf --detector hybrid
 
-#    pick the LLM provider + model (finsearch-bench style)
-uv run pysanitize sample.pdf --detector hybrid --provider pingan --model qwen3.6-27b
-uv run pysanitize sample.pdf --detector llm     --provider openai  --model qwen3-max
+#    pick the LLM provider + model (provider = a section in the model's yaml)
+uv run pysanitize sample.pdf --detector hybrid --provider openai    --model deepseek-v4-flash
+uv run pysanitize sample.pdf --detector llm     --provider openrouter --model deepseek-v4-flash
 
 # 3) Image masking: no image is detected by default — name your targets explicitly
 uv run pysanitize sample.pdf --mask-images --image-classes face   # faces
@@ -143,8 +143,8 @@ from pysanitize.pipeline import sanitize_document
 result = sanitize_document(
     "contract.pdf",
     detector="hybrid",          # rules | llm | hybrid
-    llm_model="qwen3.6-27b",    # config/llm/<model>.yaml filename
-    llm_provider="pingan",      # provider section in that yaml: openai | pingan
+    llm_model="deepseek-v4-flash",  # config/llm/<model>.yaml filename
+    llm_provider="openai",      # provider section in that yaml: openai | claude | openrouter
     fields=["phone", "company_name", "person_name"],
     mask_images=True,
     image_classes=["face"],     # image targets: face | text | <YOLO class>; empty = none
@@ -270,14 +270,14 @@ How restoration works:
 
 ## ⚙️ LLM provider config
 
-`--model` = filename of `config/llm/<model>.yaml`; `--provider` = a **provider section** in that yaml (`openai:` / `pingan:`). One yaml can hold several sections, so switching intranet/extranet is just a flag change:
+`--model` = filename of `config/llm/<model>.yaml`; `--provider` = a **provider section** in that yaml (`openai:` / `claude:` / `openrouter:` / …). One yaml can hold several sections — every provider is an OpenAI-compatible endpoint, so switching providers is just a flag change:
 
 ```bash
-uv run pysanitize contract.pdf --detector hybrid --provider pingan --model qwen3.6-27b
+uv run pysanitize contract.pdf --detector hybrid --provider openrouter --model deepseek-v4-flash
 ```
 
 - `api_key` always uses a `${ENV_VAR}` placeholder, expanded from the environment at runtime — **plaintext keys never enter the repo**
-- A missing section errors clearly: `no 'pingan' section in .../qwen3.6-27b.yaml; have: openai`
+- A missing section errors clearly: `no 'openrouter' section in .../deepseek-v4-flash.yaml; have: openai`
 - Global defaults live in `config/pipeline.yaml` under `text.model` / `text.provider`
 
 ## 🔒 Security boundaries & known limits
@@ -287,6 +287,9 @@ uv run pysanitize contract.pdf --detector hybrid --provider pingan --model qwen3
 - **Person / company names** are dictionary heuristics with limited precision; use `hybrid` for sensitive material
 - **LLM hallucination**: the verbatim re-match gate means misses are far likelier than false positives
 - **Image masking is off by default**: you must pass `--image-classes` and/or `--image-text`; bare `--image-text` mosaics **all** printed text in an image
+- **No seal / handwriting / profile-face detection**: text on seals rides OCR (lines under `image.ocr.confidence` are dropped); graphic signatures, logos and non-frontal faces have no dedicated detector — custom YOLO weights can add targets, but expect misses
+- **No image-masking verification**: unlike `redacted.pdf` (which is re-read for leftover values), masked images are not re-OCR'd to prove the text is gone — a detection miss stays invisible
+- **Image OCR language defaults to `ch`** (Chinese + Latin); other languages need `image.ocr.lang` in `config/pipeline.yaml`
 - **Long-number false positives** (18-digit figures in finance tables): checksums on by default + `bank_account` off by default
 - **PyMuPDF is AGPL-licensed** — used only for `redacted.pdf`; fine for internal tooling, review before closed-source distribution
 - **`--recoverable` puts ciphertext in `audit.json`** — the document stays shareable, but the audit + `.recover.key` (0600) must be guarded like the data itself
@@ -307,7 +310,7 @@ pysanitize/
 ├── recover/    reversible tokens (AES-GCM + scrypt) and pipeline-independent restoration
 ├── pipeline.py sanitize_document() orchestration (the only public entry)
 ├── cli.py      argparse CLI
-├── llm/        LLM facade (openai / pingan providers)
+├── llm/        LLM facade (openai / claude / openrouter providers)
 └── report.py   audit.json / sensitive_report.json
 config/         local overrides (git-ignored, optional): fields.yaml (field specs) / pipeline.yaml (all pipeline tunables) / llm/*.yaml (model config); built-in defaults apply without it
 ```

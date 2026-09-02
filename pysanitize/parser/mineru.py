@@ -1,8 +1,8 @@
 """MinerU CLI wrapper: documents → reading-ordered ``Block`` lists (+ extracted images).
 
-Ported from ``finsearch/tools/parser/mineru_parse.py`` (FinSearch-Bench). The
-CLI is invoked via ``subprocess`` — the CLI starts a throwaway local server, so
-parsing is fully local, no external API. Only the files MinerU leaves on disk
+The CLI is invoked via ``subprocess`` — the CLI starts a throwaway local
+server, so parsing is fully local, no external API. Only the files MinerU
+leaves on disk
 are consumed: ``<stem>_middle.json`` (primary, with per-line geometry) and
 ``<stem>_content_list_v2.json`` (table cell text + fallback), so the same
 output is reusable across machines regardless of how MinerU itself was run.

@@ -1,9 +1,8 @@
-"""OpenAI-compatible LLM provider for external (internet) access.
+"""OpenAI-compatible LLM provider.
 
 Uses the OpenAI SDK directly (no langchain). Works with any OpenAI-compatible
-chat-completions endpoint: OpenAI, DeepSeek, Qwen via DashScope compatible-mode,
-local vLLM, etc. The PingAn intranet gateway is the same protocol and is served
-by ``PingAnLLMProvider`` (``pingan.py``) with extra auth headers.
+chat-completions endpoint: OpenAI, DeepSeek, Claude, OpenRouter, Qwen via
+DashScope compatible-mode, local vLLM, etc.
 """
 
 from __future__ import annotations

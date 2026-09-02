@@ -6,7 +6,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Version](https://img.shields.io/badge/version-0.2.0-4A90D9)
-![Tests](https://img.shields.io/badge/tests-143%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-194%20passed-brightgreen)
 ![Parse](https://img.shields.io/badge/parse-local%20MinerU-2E7D32)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -26,7 +26,7 @@
 | 🖼️ **图片脱敏** | `face` / 任意 YOLO 类别（检测模型），**以及按文字**：裸 `--image-text` 打码图片里全部印刷文字，或传字段列表只打码命中的敏感字段（如印章上的公司名）→ 马赛克 |
 | 📄 **PDF 打码** | `--redact-pdf` 产出保留排版的 `redacted.pdf` —— 敏感字符**真删除**后盖马赛克，表格边框保留 |
 | 🔁 **可恢复脱敏** | `--recoverable` 把每个敏感值的密文记入 `audit.json`；`pysanitize --recover` 用口令还原原始文档——脱敏文档本身与普通脱敏结果完全一致 |
-| 🔌 **供应商可切换** | `--provider openai \| pingan`，内网/外网一键切换 |
+| 🔌 **供应商可切换** | `--provider openai \| claude \| openrouter`，在同一模型 yaml 里选 provider 段 |
 | 📊 **审计友好** | 公开摘要不含原文；含原文报告 `--audit` 才生成 |
 | 🛡️ **容错优先** | 缺 key / 缺可选依赖 / 模型下载失败 → 降级警告，绝不硬崩 |
 
@@ -83,9 +83,9 @@ uv run pysanitize 样例.pdf
 # 2) 混合模式：规则 + LLM 定位（默认 openai/deepseek-v4-flash）
 uv run pysanitize 样例.pdf --detector hybrid
 
-#    指定 LLM 供应商与模型（与 finsearch-bench 一致）
-uv run pysanitize 样例.pdf --detector hybrid --provider pingan --model qwen3.6-27b
-uv run pysanitize 样例.pdf --detector llm     --provider openai  --model qwen3-max
+#    指定 LLM 供应商与模型（provider = 模型 yaml 里的一个段）
+uv run pysanitize 样例.pdf --detector hybrid --provider openai    --model deepseek-v4-flash
+uv run pysanitize 样例.pdf --detector llm     --provider openrouter --model deepseek-v4-flash
 
 # 3) 图片打码：默认不检测任何图片，必须显式指定目标
 uv run pysanitize 样例.pdf --mask-images --image-classes face   # 人脸
@@ -139,8 +139,8 @@ from pysanitize.pipeline import sanitize_document
 result = sanitize_document(
     "合同.pdf",
     detector="hybrid",          # rules | llm | hybrid
-    llm_model="qwen3.6-27b",    # config/llm/<model>.yaml 文件名
-    llm_provider="pingan",      # 该 yaml 里的 provider 段：openai | pingan
+    llm_model="deepseek-v4-flash",  # config/llm/<model>.yaml 文件名
+    llm_provider="openai",      # 该 yaml 里的 provider 段：openai | claude | openrouter
     fields=["phone", "company_name", "person_name"],
     mask_images=True,
     image_classes=["face"],     # 图片打码目标：face | text | <YOLO 类别>；空=不处理
@@ -266,14 +266,14 @@ audit 里记录了什么（仅 recoverable 模式）：
 
 ## ⚙️ LLM 供应商配置
 
-`--model` = `config/llm/<model>.yaml` 的文件名；`--provider` = 该 yaml 里的 **provider 段**（`openai:` / `pingan:`）。一个 yaml 可同时放多段，内网/外网切换只改 flag：
+`--model` = `config/llm/<model>.yaml` 的文件名；`--provider` = 该 yaml 里的 **provider 段**（`openai:` / `claude:` / `openrouter:` / …）。一个 yaml 可同时放多段——所有 provider 都是 OpenAI 兼容端点，切换供应商只改 flag：
 
 ```bash
-uv run pysanitize 合同.pdf --detector hybrid --provider pingan --model qwen3.6-27b
+uv run pysanitize 合同.pdf --detector hybrid --provider openrouter --model deepseek-v4-flash
 ```
 
 - `api_key` 一律用 `${ENV_VAR}` 占位，运行时从环境展开——**明文 key 永不入库**
-- 选中的段缺失时报错明确：`no 'pingan' section in .../qwen3.6-27b.yaml; have: openai`
+- 选中的段缺失时报错明确：`no 'openrouter' section in .../deepseek-v4-flash.yaml; have: openai`
 - 全局默认在 `config/pipeline.yaml` 的 `text.model` / `text.provider` 设置
 
 ## 🔒 安全边界与已知限制
@@ -283,6 +283,9 @@ uv run pysanitize 合同.pdf --detector hybrid --provider pingan --model qwen3.6
 - **人名 / 公司名**为词典启发式，精度有限；敏感场景建议 `hybrid` 模式
 - **LLM 幻觉**：value 回匹配硬防线，漏检概率高于误检
 - **图片脱敏默认不启用**：必须显式指定 `--image-classes` 和/或 `--image-text`；裸 `--image-text` 打码图片中**所有**印刷文字
+- **印章 / 手写 / 侧脸无专用检测**：印章上的文字靠 OCR（低于 `image.ocr.confidence` 的行被丢弃）；图形化签名、logo、非正面人脸没有检测器——可用自定义 YOLO 权重扩充目标，但预期会漏
+- **图片打码无自动校验**：`redacted.pdf` 会重读校验残留值，图片打码后**不会**重新 OCR 复核——检测漏了不会被发现
+- **图片 OCR 语言默认 `ch`**（中文+拉丁）；其他语种需改 `config/pipeline.yaml` 的 `image.ocr.lang`
 - **长数字误报**（财务表格 18 位数字）：默认开校验位 + `bank_account` 默认关闭
 - **PyMuPDF 为 AGPL 许可** —— 仅用于 `redacted.pdf`；内部工具无碍，闭源分发前请评估
 - **`--recoverable` 把密文写进 `audit.json`** —— 脱敏文档仍可外发，但 audit 与 `.recover.key`（0600）须与数据同等保管
@@ -303,7 +306,7 @@ pysanitize/
 ├── recover/    可逆令牌（AES-GCM + scrypt）与独立于流水线的还原
 ├── pipeline.py sanitize_document() 编排（唯一公共入口）
 ├── cli.py      argparse CLI
-├── llm/        LLM 门面（openai / pingan 多 provider）
+├── llm/        LLM 门面（openai / claude / openrouter 多 provider）
 └── report.py   audit.json / sensitive_report.json
 config/         本地覆盖（git 忽略，可选）：fields.yaml（字段规格）/ pipeline.yaml（全部流水线可调参数）/ llm/*.yaml（模型配置）；缺省用内置默认
 ```
