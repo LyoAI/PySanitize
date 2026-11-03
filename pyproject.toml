@@ -17,6 +17,10 @@ dependencies = [
     "json-repair",
     "six",  # mineru[pipeline] imports it transitively but doesn't declare it
     "mineru[pipeline]>=3.4.4",
+    # Native xlsx parse + redaction (`redacted.xlsx`): every cell carries exact
+    # provenance (pysanitize/parser/xlsx.py), which MinerU's office path cannot
+    # provide — no geometry, tables flattened, displayed values reformatted.
+    "openpyxl>=3.1",
     # PDF redaction (`redacted.pdf`). MinerU only *reads* PDFs; faithful redaction
     # (delete glyphs, keep table borders) needs a writer — pymupdf is the only
     # dependency that preserves the original page content. AGPLv3-licensed;
@@ -41,8 +45,9 @@ image-yolo = ["ultralytics"]
 # OCR text-region detection (`--image-classes text`): masks every printed text
 # region in an image. Ships paddlepaddle, which is heavy.
 image-ocr = ["paddleocr"]
-# M2 milestone: redact original-format documents (docx/xlsx).
-render-office = ["python-docx", "openpyxl"]
+# M2 milestone: redact DOCX originals (xlsx moved to core deps — parsing
+# itself needs openpyxl; python-docx stays until DOCX redaction lands).
+render-office = ["python-docx"]
 # Reversible masking (`--recoverable` / `pysanitize --recover`): AES-256-GCM
 # tokens via pysanitize/recover. Without it, --recoverable fails fast instead
 # of silently producing unrecoverable output.

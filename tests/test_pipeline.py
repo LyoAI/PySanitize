@@ -347,3 +347,17 @@ def test_image_fields_empty_disables_field_detection(make_doc, monkeypatch, tmp_
         out_dir=tmp_path / "out",
     )
     assert not seen["called"]  # explicit [] → no field-driven image masking
+
+
+def test_fields_reenables_disabled_field(make_doc, monkeypatch, tmp_path):
+    """Explicitly naming a disabled-by-default field (bank_account) must
+    re-enable it — RuleDetector gets ``fields`` too, or its enabled-filter
+    would silently drop it again (regression: --fields bank_account was a
+    no-op for the masked output)."""
+    doc = make_doc([("paragraph", "卡号 6222028032247289119 尾号四个八", 1)])
+    _patch_parse(monkeypatch, doc)
+    r = pl.sanitize_document(
+        "doc.pdf", detector="rules", fields=["bank_account"], out_dir=tmp_path / "out"
+    )
+    md = r.sanitized_md.read_text(encoding="utf-8")
+    assert "6222" + "*" * 11 + "9119" in md  # 19 digits, keep_head=4 / keep_tail=4

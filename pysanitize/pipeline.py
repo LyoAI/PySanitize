@@ -34,7 +34,9 @@ from pysanitize.masker.text import Placements, mask_text, mask_text_placed
 from pysanitize.parser.blocks import META_TYPES
 from pysanitize.parser.document import ParsedDocument, parse_document
 from pysanitize.redact import Redaction, resolve_rects, verify_redaction
+from pysanitize.redact import CellEdit, resolve_cells, verify_redaction_xlsx
 from pysanitize.redact import redact_pdf as _write_redacted_pdf  # param name shadows the import
+from pysanitize.redact import redact_xlsx as _write_redacted_xlsx  # ditto
 from pysanitize.report import AuditInfo, write_audit, write_sensitive_report
 from pysanitize.utils import get_logger
 
@@ -63,6 +65,7 @@ class SanitizeResult:
     duration_s: float
     detector: str
     redacted_pdf: Path | None = None  # PDF sources only, when regions were found
+    redacted_xlsx: Path | None = None  # XLSX sources only, when cells were found
     redaction_leftovers: list[tuple[str, int]] = field(default_factory=list)
     fields: list[str] = field(default_factory=list)
 
@@ -82,6 +85,7 @@ def sanitize_document(
     score_threshold: float | None = None,
     mosaic_factor: int | None = None,
     redact_pdf: bool | None = None,       # None → config output.redact_pdf
+    redact_xlsx: bool | None = None,      # None → config output.redact_xlsx
     redaction_style: str | None = None,   # mosaic | block (None → config)
     audit: bool | None = None,            # None → config output.audit
     recoverable: bool | None = None,      # None → config output.recoverable
@@ -114,6 +118,10 @@ def sanitize_document(
         redact_pdf: for PDF sources, also write a layout-preserving
             ``redacted.pdf`` (true glyph removal + mosaic) alongside the md.
             Off unless passed true (CLI ``--redact-pdf``) or enabled in config.
+        redact_xlsx: for XLSX sources, also write ``redacted.xlsx`` — sensitive
+            cells' values replaced at the source, metadata / comments / sheet
+            names / chart caches scrubbed (see ``pysanitize.redact.xlsx``).
+            Off unless passed true (CLI ``--redact-xlsx``) or enabled in config.
         redaction_style: ``mosaic`` (pixelated) or ``block`` (solid box).
         audit: additionally write ``sensitive_report.json`` with raw values.
         recoverable: make the run reversible — the document keeps the normal
@@ -225,7 +233,13 @@ def sanitize_document(
     specs = select_specs(load_field_specs(), fields)
     registry = DetectionRegistry()
     if detector in ("rules", "hybrid"):
-        registry.add(RuleDetector(specs=specs, verify_checksums=verify_checksums))
+        # ``fields`` rides along (same as the OCR rule detector): without it
+        # RuleDetector re-applies the *enabled* filter and would silently drop
+        # disabled-by-default fields the user explicitly re-enabled via
+        # --fields (e.g. bank_account).
+        registry.add(
+            RuleDetector(specs=specs, fields=fields, verify_checksums=verify_checksums)
+        )
     if detector in ("llm", "hybrid"):
         registry.add(
             LLMDetector(
@@ -336,6 +350,64 @@ def sanitize_document(
             [r.rect.x0, r.rect.y0, r.rect.x1, r.rect.y1]
         )
 
+    # ---- XLSX redaction: value replacement at the cell source ---------------
+    # Mirrors the PDF branch: resolve spans → cells (exact provenance, no
+    # geometry needed), write the copy, verify byte-level. "pages" are sheets
+    # and "regions" are cells in the audit for this branch.
+    redacted_xlsx: Path | None = None
+    edits: list[CellEdit] = []
+    if doc.source_suffix == ".xlsx" and doc_path.is_file():
+        do_redact_xlsx = (
+            output_cfg.get("redact_xlsx", False)
+            if redact_xlsx is None
+            else redact_xlsx
+        )
+        if do_redact_xlsx or cipher is not None:
+            # Also resolved in recovery mode (redaction off) so the audit can
+            # record each span's cell for --recover.
+            edits = resolve_cells(doc, detections, mask_map)
+        if do_redact_xlsx:
+            if edits:
+                redacted_xlsx = _write_redacted_xlsx(
+                    doc_path,
+                    edits,
+                    out_dir / "redacted.xlsx",
+                    values=[d.value for d in detections],
+                )
+                redacted_pages = len({e.sheet for e in edits})
+                redaction_regions = len(edits)
+                leftovers = verify_redaction_xlsx(
+                    redacted_xlsx, [d.value for d in detections]
+                )
+                if leftovers:
+                    members = ",".join(sorted({m for _, m in leftovers}))
+                    logger.error(
+                        "redaction verification: %d sensitive values still present "
+                        "in %s (members %s) — see sensitive_report.json "
+                        "redaction_leftovers",
+                        len(leftovers),
+                        redacted_xlsx.name,
+                        members,
+                    )
+            elif detections:
+                logger.warning(
+                    "XLSX redaction enabled but no cells resolvable; "
+                    "skipping redacted.xlsx"
+                )
+
+    cell_by_span: dict[tuple[int, int], list[dict]] = {}
+    for e in edits:
+        for _, _, _, s, en in e.repls:
+            cell_by_span.setdefault((s, en), []).append(
+                {
+                    "sheet": e.sheet,
+                    "idx": e.sheet_idx,
+                    "row": e.row,
+                    "col": e.col,
+                    "kind": e.kind,
+                }
+            )
+
     # Recovery bookkeeping, keyed by the detection's original offsets: the
     # ciphertext, where its placeholder sits in sanitized.md, and which page
     # rectangles were redacted — everything --recover needs besides the key.
@@ -351,6 +423,8 @@ def sanitize_document(
                 entry["md"] = md_range
             if rect_by_span.get((d.start, d.end)):
                 entry["rects"] = rect_by_span[(d.start, d.end)]
+            if cell_by_span.get((d.start, d.end)):
+                entry["cells"] = cell_by_span[(d.start, d.end)]
             recover_spans[(d.start, d.end)] = entry
 
     duration = time.monotonic() - start
@@ -368,6 +442,7 @@ def sanitize_document(
         duration_s=duration,
         started_at=started_at,
         redacted_pdf=redacted_pdf.name if redacted_pdf else None,
+        redacted_xlsx=redacted_xlsx.name if redacted_xlsx else None,
         redacted_pages=redacted_pages,
         redaction_regions=redaction_regions,
         redaction_leftovers=leftovers,
@@ -378,12 +453,13 @@ def sanitize_document(
     sensitive_path = write_sensitive_report(info, out_dir) if audit else None
 
     logger.success(
-        "%s: %d sensitive spans masked, %d/%d images mosaiced%s -> %s",
+        "%s: %d sensitive spans masked, %d/%d images mosaiced%s%s -> %s",
         doc.doc_id,
         len(detections),
         len(masked_images),
         len(doc.images),
         f", {redaction_regions} PDF regions redacted" if redacted_pdf else "",
+        f", {redaction_regions} cells redacted" if redacted_xlsx else "",
         out_dir,
     )
     return SanitizeResult(
@@ -396,6 +472,7 @@ def sanitize_document(
         images_total=len(doc.images),
         images_masked=len(masked_images),
         redacted_pdf=redacted_pdf,
+        redacted_xlsx=redacted_xlsx,
         redaction_leftovers=leftovers,
         duration_s=duration,
         detector=detector,

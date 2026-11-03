@@ -45,6 +45,9 @@ class OptionsPane(VerticalScroll):
             yield Label("Redacted PDF")
             yield Switch(id="redact-pdf")
         with Horizontal(classes="field-row"):
+            yield Label("Redacted XLSX")
+            yield Switch(id="redact-xlsx")
+        with Horizontal(classes="field-row"):
             yield Label("Recoverable")
             yield Switch(id="recoverable")
         with Horizontal(classes="field-row"):
@@ -77,6 +80,7 @@ class OptionsPane(VerticalScroll):
             "llm_provider": self.query_one("#llm-provider", Input).value.strip(),
             "audit": self.query_one("#audit", Switch).value or None,
             "redact_pdf": self.query_one("#redact-pdf", Switch).value or None,
+            "redact_xlsx": self.query_one("#redact-xlsx", Switch).value or None,
             "recoverable": self.query_one("#recoverable", Switch).value or None,
             "recover_key": self.query_one("#recover-key", Input).value.strip() or None,
             "out_dir": self.query_one("#out-dir", Input).value.strip(),

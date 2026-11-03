@@ -1,0 +1,285 @@
+"""XLSX redaction: detections → cell edits → value replacement + scrubbing.
+
+The spreadsheet analog of :mod:`pysanitize.redact.pdf`. Where the PDF redactor
+maps char offsets onto page rectangles (geometry), this maps them onto
+``(sheet, row, col)`` via the parser's :class:`CellBox` provenance — exact by
+construction, since detection ran on the very strings these cells render.
+
+"Redaction" here means *value replacement at the source*: an xlsx has no
+overlay to draw, the sensitive bytes live in the sheet XML / shared strings,
+so a masked cell has its value rewritten (a formula in that cell dies with it
+— the displayed value is the sensitive thing). Beyond edited cells:
+
+- docProps (creator / lastModifiedBy / title / …) — always scrubbed; author
+  metadata is the classic silent xlsx leak.
+- cached formula results of *other* cells never survive: any cell whose
+  rendered value contains a detection was detected itself and edited.
+- cell comments, sheet names and formula *literals* echoing a detection
+  value are scrubbed — value-based, since the value is proven sensitive by a
+  detection elsewhere; over-redaction of the copy, never a leak.
+- chart series caches (``numCache`` / ``strCache`` — copies of the source
+  labels/values) are dropped; Excel rebuilds them from the references on open.
+- ``fullCalcOnLoad`` forces recalculation so formulas fed by masked cells
+  never show stale derived values.
+
+:func:`verify_redaction_xlsx` is byte-level: it greps every text member of
+the output zip (sheets, shared strings, charts, comments, docProps, …) for
+the detection values, raw and XML-escaped — the net that reports anything the
+scrubbing above missed (e.g. pivot caches, P2).
+"""
+
+from __future__ import annotations
+
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from pysanitize.detector.base import Detection
+from pysanitize.detector.specs import MaskSpec
+from pysanitize.utils import get_logger
+
+logger = get_logger()
+
+# Zip members scanned by verify (everything textual in an xlsx is xml-ish).
+_TEXT_SUFFIXES = frozenset({".xml", ".rels", ".vml"})
+
+
+@dataclass
+class CellEdit:
+    """One cell to rewrite: the original rendered text + masked segments.
+
+    ``repls`` are ``(rel_start, rel_end, placeholder)`` spans within ``text``
+    (block-relative to the cell, sorted ascending); splicing them right to
+    left yields the masked cell value. Each keeps its detection's global
+    ``start``/``end`` so the pipeline can record cells per span for
+    ``--recover``.
+    """
+
+    sheet: str
+    sheet_idx: int  # 0-based position (stable across sheet renames)
+    row: int  # 1-based
+    col: int  # 1-based
+    text: str  # the cell's rendered original (what detectors saw)
+    kind: str = "str"
+    repls: list[tuple[int, int, str, int, int]] = field(default_factory=list)
+    start: int = -1
+    end: int = -1
+
+
+def resolve_cells(
+    doc, detections: list[Detection], mask_map: dict[str, MaskSpec]
+) -> list[CellEdit]:
+    """Map text detections onto cell edits via the blocks' CellBox provenance.
+
+    Mirrors :func:`pysanitize.redact.pdf.resolve_rects`: for each detection,
+    every block it touches contributes the CellBoxes its range intersects;
+    the intersected *piece* of the cell text is masked with the field's mask
+    (the same per-piece semantics ``_split_straddling`` gives the md path).
+    Detections that map onto no cell (sheet furniture — there is none today)
+    simply produce no edit.
+    """
+    edits: dict[tuple[str, int, int], CellEdit] = {}
+    for d in detections:
+        for block in doc.span(d.start, d.end):
+            if not block.cells:
+                continue
+            lo = max(d.start, block.char_start) - block.char_start
+            hi = min(d.end, block.char_end) - block.char_start
+            for cell in block.cells:
+                clo, chi = max(lo, cell.start), min(hi, cell.end)
+                if chi <= clo:
+                    continue
+                key = (cell.sheet, cell.row, cell.col)
+                edit = edits.get(key)
+                if edit is None:
+                    edit = CellEdit(
+                        sheet=cell.sheet,
+                        sheet_idx=cell.idx,
+                        row=cell.row,
+                        col=cell.col,
+                        text=cell.text,
+                        kind=cell.kind,
+                    )
+                    edits[key] = edit
+                piece = cell.text[clo - cell.start : chi - cell.start]
+                edit.repls.append(
+                    (clo - cell.start, chi - cell.start, mask_map[d.field_type].mask(piece), d.start, d.end)
+                )
+    out = list(edits.values())
+    for edit in out:
+        edit.repls.sort()
+        edit.start, edit.end = edit.repls[0][3], edit.repls[-1][4]
+    return out
+
+
+def redact_xlsx(
+    doc_path: str | Path,
+    edits: list[CellEdit],
+    out_path: str | Path,
+    *,
+    values: list[str] | None = None,
+    placeholder: str = "***",
+) -> Path:
+    """Write a redacted copy of ``doc_path`` to ``out_path``.
+
+    Args:
+        doc_path: source workbook. Opened with formulas (``data_only=False``):
+            untouched cells keep their formulas; an edited cell's formula is
+            replaced by its masked value.
+        edits: cells to rewrite (from :func:`resolve_cells`).
+        out_path: destination — the pipeline passes ``out_dir/redacted.xlsx``.
+        values: detection values, used to scrub cell comments and sheet names
+            that contain them (substring → ``placeholder``).
+        placeholder: the stand-in used by comment / sheet-name scrubbing.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(Path(doc_path), data_only=False)
+    for edit in edits:
+        text = edit.text
+        for rel_start, rel_end, masked, _, _ in sorted(edit.repls, reverse=True):
+            text = text[:rel_start] + masked + text[rel_end:]
+        ws = wb.worksheets[edit.sheet_idx] if 0 <= edit.sheet_idx < len(wb.worksheets) else wb[edit.sheet]
+        ws.cell(row=edit.row, column=edit.col).value = text
+
+    values = [v for v in (values or []) if v]
+    n_comments, n_formulas = _scrub_comments_and_formulas(wb, values, placeholder)
+    n_sheets = _scrub_sheet_names(wb, values)
+    _drop_chart_caches(wb)
+    _scrub_properties(wb)
+    wb.calculation.fullCalcOnLoad = True
+    wb.save(out_path)
+    if n_comments or n_formulas or n_sheets:
+        logger.info(
+            "scrubbed %d comment(s), %d formula literal(s), renamed %d "
+            "sheet(s) containing sensitive values",
+            n_comments,
+            n_formulas,
+            n_sheets,
+        )
+    logger.info("redacted %d cells -> %s", len(edits), out_path)
+    return Path(out_path)
+
+
+def verify_redaction_xlsx(out_path: str | Path, values: list[str]) -> list[tuple[str, str]]:
+    """Which whitespace-free ``values`` still appear in the redacted workbook.
+
+    Byte-level: every text member of the zip (sheets, shared strings, charts,
+    comments, docProps, …) is searched — unlike the PDF text layer this
+    catches caches and metadata openpyxl does not model. Members are
+    ``html.unescape``d first: openpyxl writes non-ASCII strings as numeric
+    character references (``&#24352;``), which a raw grep would silently miss.
+    Returns ``(value, zip member)`` pairs deduped by value; the caller logs
+    them loudly but never fails the run on them.
+    """
+    import html
+
+    wanted = {v for v in values if v and not any(c.isspace() for c in v)}
+    if not wanted:
+        return []
+    found: dict[str, str] = {}
+    with zipfile.ZipFile(out_path) as zf:
+        for name in zf.namelist():
+            if Path(name).suffix.lower() not in _TEXT_SUFFIXES:
+                continue
+            blob = html.unescape(zf.read(name).decode("utf-8", errors="ignore"))
+            for v in wanted:
+                if v not in found and v in blob:
+                    found[v] = name
+    return sorted(found.items())
+
+
+def _scrub_comments_and_formulas(wb, values: list[str], placeholder: str) -> tuple[int, int]:
+    """Value-echo scrubbing of the surfaces detection cannot reach per span.
+
+    Cell comments and sheet names never enter the detection surface, and a
+    formula's *literal* may echo a value whose displayed cache was missed by
+    the name heuristics (``=CONCATENATE(B2," 发给张三")`` — 张三 flanked by a
+    CJK char is not a rule hit, but 张三 detected elsewhere proves it
+    sensitive). Any occurrence of a detected value in these surfaces goes to
+    ``placeholder`` — over-redaction of a redacted copy, never a leak. Plain
+    string cells are NOT scrubbed this way: they sit on the detection surface,
+    so misses there are the detector's (and verify's) to report.
+    """
+    comments = formulas = 0
+    if not values:
+        return 0, 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.comment is not None:
+                    text = cell.comment.text
+                    clean = text
+                    for v in values:
+                        clean = clean.replace(v, placeholder)
+                    if clean != text:
+                        cell.comment.text = clean
+                        comments += 1
+                value = cell.value
+                if isinstance(value, str) and value.startswith("="):
+                    clean = value
+                    for v in values:
+                        clean = clean.replace(v, placeholder)
+                    if clean != value:
+                        cell.value = clean
+                        formulas += 1
+    return comments, formulas
+
+
+# Excel forbids : \ / ? * [ ] in sheet (tab) names and caps them at 31 chars —
+# the generic "***" placeholder is itself illegal there.
+_SHEET_PLACEHOLDER = "□□□"
+
+
+def _scrub_sheet_names(wb, values: list[str]) -> int:
+    """Mask detection values inside sheet (tab) names, keeping them legal.
+
+    Uses its own placeholder because Excel rejects ``*`` in titles; results
+    are deduplicated (Excel rejects duplicates) and truncated to 31 chars.
+    """
+    renamed = 0
+    taken = {ws.title for ws in wb.worksheets}
+    for ws in wb.worksheets:
+        if not any(v in ws.title for v in values):
+            continue
+        new = ws.title
+        for v in values:
+            new = new.replace(v, _SHEET_PLACEHOLDER)
+        new = new[:31] or _SHEET_PLACEHOLDER
+        while new in taken:  # keep tabs unique — Excel rejects duplicates
+            new = (new[:30] + "~") if len(new) >= 31 else new + "_"
+        taken.discard(ws.title)
+        taken.add(new)
+        ws.title = new
+        renamed += 1
+    return renamed
+
+
+def _drop_chart_caches(wb) -> None:
+    """Null chart series caches — copies of source labels/values (PII echoes).
+
+    References stay intact; Excel rebuilds caches on open. Best-effort: an
+    exotic chart shape openpyxl fails to model is left for verify to report.
+    """
+    for ws in wb.worksheets:
+        for chart in getattr(ws, "_charts", []) or []:
+            for ser in getattr(chart, "series", []) or []:
+                for ref in (
+                    getattr(ser, "val", None),
+                    getattr(ser, "cat", None),
+                ):
+                    for attr in ("numRef", "strRef"):
+                        node = getattr(ref, attr, None)
+                        if node is not None and getattr(node, "numCache", None) is not None:
+                            node.numCache = None
+                        if node is not None and getattr(node, "strCache", None) is not None:
+                            node.strCache = None
+
+
+def _scrub_properties(wb) -> None:
+    """Blank core document properties (creator, title, …) — classic metadata PII."""
+    props = wb.properties
+    props.creator = "PySanitize"
+    props.lastModifiedBy = "PySanitize"
+    for attr in ("title", "subject", "description", "keywords", "category"):
+        setattr(props, attr, "")

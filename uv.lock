@@ -2375,6 +2375,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "opencv-python" },
+    { name = "openpyxl" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pymupdf" },
@@ -2394,7 +2395,6 @@ recover = [
     { name = "cryptography" },
 ]
 render-office = [
-    { name = "openpyxl" },
     { name = "python-docx" },
 ]
 tui = [
@@ -2417,7 +2417,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1" },
     { name = "opencv-python", specifier = ">=4.8,<5.0" },
-    { name = "openpyxl", marker = "extra == 'render-office'" },
+    { name = "openpyxl", specifier = ">=3.1" },
     { name = "paddleocr", marker = "extra == 'image-ocr'" },
     { name = "pillow" },
     { name = "pydantic", specifier = ">=2" },

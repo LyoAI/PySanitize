@@ -58,11 +58,13 @@ class AuditInfo:
     started_at: str = ""
     version: str = __version__
     redacted_pdf: str | None = None  # filename under out_dir, or None
-    redacted_pages: int = 0
-    redaction_regions: int = 0
-    # (value, first page) pairs still present in redacted.pdf after redaction —
+    redacted_xlsx: str | None = None  # ditto, xlsx sources
+    redacted_pages: int = 0  # PDF pages, or sheets touched, for xlsx sources
+    redaction_regions: int = 0  # PDF rects, or cells rewritten, for xlsx sources
+    # (value, page) pairs still present in redacted.pdf after redaction —
     # values go to sensitive_report.json only; audit.json carries just counts.
-    redaction_leftovers: list[tuple[str, int]] = field(default_factory=list)
+    # For xlsx sources the second element is the leaking zip member (a string).
+    redaction_leftovers: list[tuple[str, int | str]] = field(default_factory=list)
     # Recovery mode only: the cipher parameter block (never key material) and
     # per-span recovery data — ciphertext + placeholder range in sanitized.md
     # + redacted PDF rectangles — keyed by the detection's original offsets.
@@ -90,6 +92,7 @@ def write_audit(info: AuditInfo, out_dir: Path) -> Path:
         "images": {"total": info.images_total, "masked": info.images_masked},
         "redaction": {
             "pdf": info.redacted_pdf,
+            "xlsx": info.redacted_xlsx,
             "pages": info.redacted_pages,
             "regions": info.redaction_regions,
             # Raw-free: counts only — the leaked values+pages live in

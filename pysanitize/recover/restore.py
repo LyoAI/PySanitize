@@ -8,10 +8,13 @@ range + ``rects``).
 
 Markdown recovery is exact: each span records where its placeholder sits, so
 restoration splices the decrypted value back at that range (verified against
-the placeholder text). PDF recovery is best-effort: the original glyphs were
-truly *deleted* at sanitize time, so recovery clears the redacted region and
-re-inserts the decrypted text with a fitted font — the values come back, the
-original layout does not.
+the placeholder text). XLSX recovery is exact too, and per cell: each span
+records the ``(sheet, row, col)`` it touched, so placeholders are swapped for
+decrypted values in place, with the original python type restored for
+whole-cell numeric/date masks. PDF recovery is best-effort: the original
+glyphs were truly *deleted* at sanitize time, so recovery clears the redacted
+region and re-inserts the decrypted text with a fitted font — the values come
+back, the original layout does not.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ class RecoverResult:
     output: Path
     restored: int  # placeholders replaced with plaintext
     unresolved: int  # audit spans missing from the artifact / undecryptable
-    kind: str  # "markdown" | "pdf"
+    kind: str  # "markdown" | "pdf" | "xlsx"
 
 
 def load_audit(input_path: Path, audit_path: Path | None = None) -> dict:
@@ -85,6 +88,8 @@ def recover_file(
 
     if input_path.suffix.lower() == ".pdf":
         return _recover_pdf(input_path, cipher, audit, out_path)
+    if input_path.suffix.lower() == ".xlsx":
+        return _recover_xlsx(input_path, cipher, audit, out_path)
     return _recover_markdown(input_path, cipher, audit, out_path)
 
 
@@ -149,6 +154,85 @@ def _recover_pdf(pdf_path: Path, cipher: TokenCipher, audit: dict, out_path) -> 
     doc.save(target)
     unresolved = len(spans) - restored
     return RecoverResult(target, restored, unresolved, "pdf")
+
+
+def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -> RecoverResult:
+    """Restore original cell values in a ``redacted.xlsx`` — exact, per cell.
+
+    Each recoverable span records the cells its detection touched (sheet index
+    + row/col + the original value's type tag). Placeholders are replaced with
+    the decrypted values left to right (a cell may hold several); a span whose
+    placeholder no longer sits in its cell is counted unresolved — the file
+    was edited after sanitizing. Whole-cell numeric/date masks come back with
+    their original python type, not as strings.
+    """
+    import datetime as dt
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(xlsx_path, data_only=False)
+    spans = audit_spans(audit)
+    placed = [s for s in spans if s.get("cells")]
+    restored = 0
+    # Cells with a single span that covered the whole cell: restore the type.
+    per_cell: dict[tuple, list[dict]] = {}
+    for span in placed:
+        for cell in span["cells"]:
+            key = (cell.get("idx", -1), cell["row"], cell["col"])
+            per_cell.setdefault(key, []).append(span)
+
+    for span in placed:  # audit order == reading order == placeholder order
+        try:
+            value = cipher.decrypt_token(span["encrypted_value"])
+        except Exception:  # wrong key / tampered ciphertext
+            continue
+        ok = False
+        for cell in span["cells"]:
+            idx, row, col = cell.get("idx", -1), cell["row"], cell["col"]
+            if not 0 <= idx < len(wb.worksheets):
+                continue
+            ws = wb.worksheets[idx]
+            current = ws.cell(row=row, column=col).value
+            text = "" if current is None else str(current)
+            masked = span.get("masked_value", "")
+            if masked and masked in text:
+                ws.cell(row=row, column=col).value = text.replace(masked, value, 1)
+                ok = True
+        restored += 1 if ok else 0
+    # Type restore: one span, one cell, current value == decrypted value.
+    for (idx, row, col), members in per_cell.items():
+        if len(members) != 1 or not 0 <= idx < len(wb.worksheets):
+            continue
+        span = members[0]
+        kind = span["cells"][0].get("kind", "str")
+        if kind in ("str", "formula"):
+            continue
+        try:
+            value = cipher.decrypt_token(span["encrypted_value"])
+        except Exception:
+            continue
+        cell = wb.worksheets[idx].cell(row=row, column=col)
+        if cell.value != value:
+            continue
+        try:
+            if kind == "int":
+                cell.value = int(value)
+            elif kind == "float":
+                cell.value = float(value)
+            elif kind == "bool":
+                cell.value = value == "TRUE"
+            elif kind == "date":
+                cell.value = dt.date.fromisoformat(value)
+            elif kind == "datetime":
+                cell.value = dt.datetime.fromisoformat(value)
+            elif kind == "time":
+                cell.value = dt.time.fromisoformat(value)
+        except ValueError:  # keep the string when it no longer parses
+            continue
+    target = _target_for(xlsx_path, out_path)
+    wb.save(target)
+    unresolved = len(placed) - restored
+    return RecoverResult(target, restored, unresolved, "xlsx")
 
 
 def _insert_values(page, spans, values) -> int:

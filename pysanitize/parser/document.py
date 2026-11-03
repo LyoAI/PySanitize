@@ -15,6 +15,7 @@ from pysanitize.config import CACHE_DIR, MINERU_BACKEND
 
 from .blocks import Block, ExtractedImage, META_TYPES
 from .mineru import parse_blocks, pair_images
+from .xlsx import parse_xlsx_blocks
 
 
 @dataclass
@@ -126,12 +127,16 @@ def parse_document(
     lang: str = "ch",
     skip_existing: bool = True,
 ) -> ParsedDocument:
-    """Parse a document with MinerU into a ``ParsedDocument`` (public entry).
+    """Parse a document into a ``ParsedDocument`` (public entry).
+
+    ``.xlsx`` takes the native openpyxl producer (exact cell provenance for the
+    redactor, no MinerU round-trip — see :mod:`pysanitize.parser.xlsx`);
+    everything else goes through MinerU.
 
     Args:
         doc_path: PDF / image / docx / pptx / xlsx file.
         out_dir: MinerU output root. Defaults to ``.cache/<source folder>``
-            (see :func:`_default_mineru_out`).
+            (see :func:`_default_mineru_out`). Unused for ``.xlsx``.
         backend: MinerU backend ("pipeline" | "vlm-engine" | ...).
         lang: OCR language hint passed to ``mineru -l``.
         skip_existing: reuse on-disk parse output instead of re-running.
@@ -142,6 +147,13 @@ def parse_document(
     """
     path = Path(doc_path)
     out_dir = Path(out_dir) if out_dir else _default_mineru_out(path)
+    if path.suffix.lower() == ".xlsx":
+        return build_document(
+            doc_id=path.stem,
+            source_path=path,
+            blocks=parse_xlsx_blocks(path),
+            out_dir=out_dir,
+        )
     blocks, page_dimensions = parse_blocks(
         path, out_dir, backend=backend, lang=lang, skip_existing=skip_existing
     )

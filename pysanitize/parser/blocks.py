@@ -48,6 +48,28 @@ def line_sub_boxes(
     return out
 
 
+class CellBox(NamedTuple):
+    """One worksheet cell inside a table block (the xlsx native producer).
+
+    The xlsx analog of :class:`LineBox`: ``start``/``end`` are char offsets of
+    ``text`` within the block's flattened (markdown table) text, so a detection
+    range maps onto an exact ``(sheet, row, col)`` — write-back splices the
+    placeholder into ``text`` and assigns the result to the cell. ``kind`` is
+    the original python type tag ("str"/"int"/"float"/"datetime"/"bool"), kept
+    so ``--recover`` can restore the original type, not just a string.
+    """
+
+    text: str
+    sheet: str
+    row: int  # 1-based
+    col: int  # 1-based
+    start: int  # char offset of ``text`` in the flattened block text
+    end: int  # exclusive
+    kind: str = "str"
+    idx: int = 0  # 0-based worksheet position — empty sheets emit no block, so
+    # the block index would drift; recovery/redaction key off this instead
+
+
 @dataclass
 class BBox:
     """Axis-aligned bounding box in page-pixel coordinates.
@@ -103,6 +125,7 @@ class Block:
     char_end: int = 0
     bbox: BBox | None = None  # whole-block geometry (PDF/images only)
     line_boxes: list[LineBox] | None = None  # per-line text + box + char range (M2)
+    cells: list[CellBox] | None = None  # per-cell text + coords + char range (xlsx)
     image_path: Path | None = None  # extracted image file for image blocks
     image_bbox: BBox | None = None  # where the image sits on the page
 

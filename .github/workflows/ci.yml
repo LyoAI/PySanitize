@@ -25,8 +25,9 @@ jobs:
 
       - name: Install dependencies
         # The full suite needs both the TUI extra (textual — test_tui.py) and the
-        # recover extra (cryptography — test_recover.py). The heavier image/office
-        # extras degrade gracefully in tests and are left out to keep runners lean.
+        # recover extra (cryptography — test_recover.py). xlsx support is a core
+        # dep (openpyxl), so test_xlsx*.py runs everywhere; the heavier image and
+        # docx extras degrade gracefully in tests and are left out.
         run: uv sync --frozen --extra tui --extra recover
 
       - name: Run tests
