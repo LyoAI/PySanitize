@@ -15,6 +15,7 @@ from pysanitize.config import CACHE_DIR, MINERU_BACKEND
 
 from .blocks import Block, ExtractedImage, META_TYPES
 from .mineru import parse_blocks, pair_images
+from .json import parse_json_blocks
 from .xlsx import parse_xlsx_blocks
 
 
@@ -152,6 +153,13 @@ def parse_document(
             doc_id=path.stem,
             source_path=path,
             blocks=parse_xlsx_blocks(path),
+            out_dir=out_dir,
+        )
+    if path.suffix.lower() == ".json":
+        return build_document(
+            doc_id=path.stem,
+            source_path=path,
+            blocks=parse_json_blocks(path),
             out_dir=out_dir,
         )
     blocks, page_dimensions = parse_blocks(

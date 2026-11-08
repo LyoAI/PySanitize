@@ -1,11 +1,14 @@
 """Pipeline orchestration: parse → detect → mask text → mask images → redact → report.
 
-The public entry is :func:`sanitize_document`, which turns one document into a
-job directory containing ``sanitized.md`` + ``images_masked/`` + ``audit.json``
-and, for PDF sources when enabled, a layout-preserving ``redacted.pdf`` (true
-glyph removal + mosaic). Every parameter defaults to ``config/pipeline.yaml``;
-explicit kwargs (set by the CLI only when the user actually passed a flag)
-override it.
+The public entry is :func:`sanitize_document`. Document-shaped sources
+(PDF/image/docx/pptx — MinerU-parsed) turn into a job directory containing
+``sanitized.md`` + ``images_masked/`` + ``audit.json`` and, when enabled, a
+layout-preserving ``redacted.pdf``. Structured sources are their own
+artifact: ``.xlsx`` / ``.json`` bypass MinerU and markdown entirely — the
+output is ``redacted.xlsx`` / ``redacted.json`` (always written, values
+replaced at the source) + ``audit.json``. Every parameter defaults to
+``config/pipeline.yaml``; explicit kwargs (set by the CLI only when the user
+actually passed a flag) override it.
 """
 
 from __future__ import annotations
@@ -34,9 +37,11 @@ from pysanitize.masker.text import Placements, mask_text, mask_text_placed
 from pysanitize.parser.blocks import META_TYPES
 from pysanitize.parser.document import ParsedDocument, parse_document
 from pysanitize.redact import Redaction, resolve_rects, verify_redaction
-from pysanitize.redact import CellEdit, resolve_cells, verify_redaction_xlsx
+from pysanitize.redact import CellEdit, JsonEdit, resolve_cells, resolve_json_values
+from pysanitize.redact import verify_redaction_json, verify_redaction_xlsx
 from pysanitize.redact import redact_pdf as _write_redacted_pdf  # param name shadows the import
 from pysanitize.redact import redact_xlsx as _write_redacted_xlsx  # ditto
+from pysanitize.redact import redact_json as _write_redacted_json  # ditto
 from pysanitize.report import AuditInfo, write_audit, write_sensitive_report
 from pysanitize.utils import get_logger
 
@@ -56,7 +61,7 @@ class SanitizeResult:
 
     doc_id: str
     out_dir: Path
-    sanitized_md: Path
+    sanitized_md: Path | None  # None for xlsx/json sources — their artifact is redacted.*
     audit_path: Path
     sensitive_report_path: Path | None  # only with ``audit=True``
     detections: list[Detection]
@@ -66,6 +71,7 @@ class SanitizeResult:
     detector: str
     redacted_pdf: Path | None = None  # PDF sources only, when regions were found
     redacted_xlsx: Path | None = None  # XLSX sources only, when cells were found
+    redacted_json: Path | None = None  # JSON sources only, when values were found
     redaction_leftovers: list[tuple[str, int]] = field(default_factory=list)
     fields: list[str] = field(default_factory=list)
 
@@ -85,7 +91,6 @@ def sanitize_document(
     score_threshold: float | None = None,
     mosaic_factor: int | None = None,
     redact_pdf: bool | None = None,       # None → config output.redact_pdf
-    redact_xlsx: bool | None = None,      # None → config output.redact_xlsx
     redaction_style: str | None = None,   # mosaic | block (None → config)
     audit: bool | None = None,            # None → config output.audit
     recoverable: bool | None = None,      # None → config output.recoverable
@@ -118,10 +123,9 @@ def sanitize_document(
         redact_pdf: for PDF sources, also write a layout-preserving
             ``redacted.pdf`` (true glyph removal + mosaic) alongside the md.
             Off unless passed true (CLI ``--redact-pdf``) or enabled in config.
-        redact_xlsx: for XLSX sources, also write ``redacted.xlsx`` — sensitive
-            cells' values replaced at the source, metadata / comments / sheet
-            names / chart caches scrubbed (see ``pysanitize.redact.xlsx``).
-            Off unless passed true (CLI ``--redact-xlsx``) or enabled in config.
+            XLSX/JSON sources need no switch: their redacted artifact is the
+            only output — ``redacted.xlsx`` / ``redacted.json``, values
+            replaced at the source.
         redaction_style: ``mosaic`` (pixelated) or ``block`` (solid box).
         audit: additionally write ``sensitive_report.json`` with raw values.
         recoverable: make the run reversible — the document keeps the normal
@@ -282,9 +286,15 @@ def sanitize_document(
         page_dims=doc.page_dimensions,
     )
 
-    sanitized_md = out_dir / "sanitized.md"
-    md_text, md_places = _build_markdown(doc, detections, mask_map, image_names, out_dir)
-    sanitized_md.write_text(md_text, encoding="utf-8")
+    # Structured sources (xlsx/json) produce no markdown: their redacted
+    # artifact is the output (below), so building sanitized.md would only
+    # duplicate the surface — and imply a document view that doesn't ship.
+    sanitized_md: Path | None = None
+    md_places: dict[tuple[int, int], list[int]] = {}
+    if not (doc.source_suffix in (".xlsx", ".json") and doc_path.is_file()):
+        sanitized_md = out_dir / "sanitized.md"
+        md_text, md_places = _build_markdown(doc, detections, mask_map, image_names, out_dir)
+        sanitized_md.write_text(md_text, encoding="utf-8")
 
     # ---- PDF redaction: true glyph removal + mosaic, layout preserved --------
     redacted_pdf: Path | None = None
@@ -351,53 +361,81 @@ def sanitize_document(
         )
 
     # ---- XLSX redaction: value replacement at the cell source ---------------
-    # Mirrors the PDF branch: resolve spans → cells (exact provenance, no
-    # geometry needed), write the copy, verify byte-level. "pages" are sheets
-    # and "regions" are cells in the audit for this branch.
+    # Structured sources always redact — the redacted artifact is their only
+    # output (no sanitized.md). Resolve spans → cells (exact provenance), write
+    # the copy, verify byte-level. "pages" are sheets and "regions" are cells
+    # in the audit for this branch.
     redacted_xlsx: Path | None = None
     edits: list[CellEdit] = []
     if doc.source_suffix == ".xlsx" and doc_path.is_file():
-        do_redact_xlsx = (
-            output_cfg.get("redact_xlsx", False)
-            if redact_xlsx is None
-            else redact_xlsx
-        )
-        if do_redact_xlsx or cipher is not None:
-            # Also resolved in recovery mode (redaction off) so the audit can
-            # record each span's cell for --recover.
-            edits = resolve_cells(doc, detections, mask_map)
-        if do_redact_xlsx:
-            if edits:
-                redacted_xlsx = _write_redacted_xlsx(
-                    doc_path,
-                    edits,
-                    out_dir / "redacted.xlsx",
-                    values=[d.value for d in detections],
+        edits = resolve_cells(doc, detections, mask_map)
+        if edits:
+            redacted_xlsx = _write_redacted_xlsx(
+                doc_path,
+                edits,
+                out_dir / "redacted.xlsx",
+                values=[d.value for d in detections],
+            )
+            redacted_pages = len({e.sheet for e in edits})
+            redaction_regions = len(edits)
+            leftovers = verify_redaction_xlsx(
+                redacted_xlsx, [d.value for d in detections]
+            )
+            if leftovers:
+                members = ",".join(sorted({m for _, m in leftovers}))
+                logger.error(
+                    "redaction verification: %d sensitive values still present "
+                    "in %s (members %s) — see sensitive_report.json "
+                    "redaction_leftovers",
+                    len(leftovers),
+                    redacted_xlsx.name,
+                    members,
                 )
-                redacted_pages = len({e.sheet for e in edits})
-                redaction_regions = len(edits)
-                leftovers = verify_redaction_xlsx(
-                    redacted_xlsx, [d.value for d in detections]
+        elif detections:
+            logger.warning(
+                "XLSX source detected %d sensitive values but no cells "
+                "resolvable; skipping redacted.xlsx",
+                len(detections),
+            )
+
+    # ---- JSON redaction: value replacement at the leaf source ----------------
+    # Same contract as the xlsx branch, one level deeper: provenance is the
+    # leaf's traversal path, verification is data-level (every leaf + keys).
+    redacted_json: Path | None = None
+    jedits: list[JsonEdit] = []
+    if doc.source_suffix == ".json" and doc_path.is_file():
+        jedits = resolve_json_values(doc, detections, mask_map)
+        if jedits:
+            redacted_json = _write_redacted_json(
+                doc_path,
+                jedits,
+                out_dir / "redacted.json",
+            )
+            redacted_pages = 1
+            redaction_regions = len(jedits)
+            leftovers = verify_redaction_json(
+                redacted_json, [d.value for d in detections]
+            )
+            if leftovers:
+                paths = ",".join(sorted({p for _, p in leftovers}))
+                logger.error(
+                    "redaction verification: %d sensitive values still present "
+                    "in %s (paths %s) — see sensitive_report.json "
+                    "redaction_leftovers",
+                    len(leftovers),
+                    redacted_json.name,
+                    paths,
                 )
-                if leftovers:
-                    members = ",".join(sorted({m for _, m in leftovers}))
-                    logger.error(
-                        "redaction verification: %d sensitive values still present "
-                        "in %s (members %s) — see sensitive_report.json "
-                        "redaction_leftovers",
-                        len(leftovers),
-                        redacted_xlsx.name,
-                        members,
-                    )
-            elif detections:
-                logger.warning(
-                    "XLSX redaction enabled but no cells resolvable; "
-                    "skipping redacted.xlsx"
-                )
+        elif detections:
+            logger.warning(
+                "JSON source detected %d sensitive values but no leaves "
+                "resolvable; skipping redacted.json",
+                len(detections),
+            )
 
     cell_by_span: dict[tuple[int, int], list[dict]] = {}
     for e in edits:
-        for _, _, _, s, en in e.repls:
+        for _, _, _, s, en, ms, me in e.repls:
             cell_by_span.setdefault((s, en), []).append(
                 {
                     "sheet": e.sheet,
@@ -405,6 +443,22 @@ def sanitize_document(
                     "row": e.row,
                     "col": e.col,
                     "kind": e.kind,
+                    # Where the placeholder sits in the masked cell value —
+                    # --recover splices by this position, never by matching.
+                    "masked_start": ms,
+                    "masked_end": me,
+                }
+            )
+
+    json_by_span: dict[tuple[int, int], list[dict]] = {}
+    for e in jedits:
+        for _, _, _, s, en, ms, me in e.repls:
+            json_by_span.setdefault((s, en), []).append(
+                {
+                    "path": list(e.path),
+                    "kind": e.kind,
+                    "masked_start": ms,
+                    "masked_end": me,
                 }
             )
 
@@ -425,6 +479,8 @@ def sanitize_document(
                 entry["rects"] = rect_by_span[(d.start, d.end)]
             if cell_by_span.get((d.start, d.end)):
                 entry["cells"] = cell_by_span[(d.start, d.end)]
+            if json_by_span.get((d.start, d.end)):
+                entry["json"] = json_by_span[(d.start, d.end)][0]
             recover_spans[(d.start, d.end)] = entry
 
     duration = time.monotonic() - start
@@ -443,6 +499,7 @@ def sanitize_document(
         started_at=started_at,
         redacted_pdf=redacted_pdf.name if redacted_pdf else None,
         redacted_xlsx=redacted_xlsx.name if redacted_xlsx else None,
+        redacted_json=redacted_json.name if redacted_json else None,
         redacted_pages=redacted_pages,
         redaction_regions=redaction_regions,
         redaction_leftovers=leftovers,
@@ -453,13 +510,14 @@ def sanitize_document(
     sensitive_path = write_sensitive_report(info, out_dir) if audit else None
 
     logger.success(
-        "%s: %d sensitive spans masked, %d/%d images mosaiced%s%s -> %s",
+        "%s: %d sensitive spans masked, %d/%d images mosaiced%s%s%s -> %s",
         doc.doc_id,
         len(detections),
         len(masked_images),
         len(doc.images),
         f", {redaction_regions} PDF regions redacted" if redacted_pdf else "",
         f", {redaction_regions} cells redacted" if redacted_xlsx else "",
+        f", {redaction_regions} values redacted" if redacted_json else "",
         out_dir,
     )
     return SanitizeResult(
@@ -473,6 +531,7 @@ def sanitize_document(
         images_masked=len(masked_images),
         redacted_pdf=redacted_pdf,
         redacted_xlsx=redacted_xlsx,
+        redacted_json=redacted_json,
         redaction_leftovers=leftovers,
         duration_s=duration,
         detector=detector,

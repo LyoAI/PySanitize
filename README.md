@@ -18,17 +18,17 @@ English | [中文](./README_ZH.md)
 
 </div>
 
-PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / scanned documents**, fully **local** parsing on top of [MinerU](https://github.com/opendatalab/MinerU) — no cloud calls.
+PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / JSON / scanned documents**, fully **local** parsing on top of [MinerU](https://github.com/opendatalab/MinerU) — no cloud calls.
 
 ## ✨ Features
 
 | | |
 |---|---|
-| 🧩 **Multi-format input** | PDF / image / DOCX / PPTX / XLSX parsed into one unified structure |
+| 🧩 **Multi-format input** | PDF / image / DOCX / PPTX / XLSX / JSON parsed into one unified structure |
 | 🔍 **Rules + LLM dual engine** | regex + dictionary heuristics (offline-ready); the LLM only *locates*, never rewrites, with verbatim re-match against hallucination |
 | 🖼️ **Image masking** | `face` / any YOLO class (detection models) **and** text-driven — bare `--image-text` mosaics all printed text, or a field list mosaics only matching fields (e.g. a company name on a seal) → mosaic |
 | 📄 **PDF redaction** | `--redact-pdf` also yields a layout-preserving `redacted.pdf` — sensitive glyphs truly *deleted*, mosaic on top, table borders intact |
-| 📊 **Excel redaction** | `--redact-xlsx` also yields `redacted.xlsx` — sensitive cells replaced **at the source** (hidden sheets included), comments/formula literals/sheet names/chart caches/docProps scrubbed, byte-level verification |
+| 📊 **Excel & JSON redaction** | xlsx / json sources yield `redacted.xlsx` / `redacted.json` directly — values replaced **at the source** (no markdown, MinerU bypassed), comments/formula literals/sheet names/chart caches/docProps scrubbed, byte-level verification; recovery is offset-exact even when one cell holds several masked values |
 | 🔁 **Reversible masking** | `--recoverable` records each value's ciphertext in `audit.json`; `pysanitize --recover` restores the original with the passphrase — the sanitized document itself looks like any normal run |
 | 🔌 **Switchable providers** | `--provider openai \| claude \| openrouter`, pick a provider section per model yaml |
 | 📊 **Audit-friendly** | public summary has no raw values; the raw-value report is only written with `--audit` |
@@ -37,15 +37,16 @@ PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / scanned 
 ## 🔄 Pipeline
 
 ```text
-input(PDF/DOCX/Excel/scan)
+input(PDF/DOCX/Excel/JSON/scan)
   → [parser]      MinerU middle.json (per-line geometry) → ParsedDocument{text, blocks, images/}
-                  (xlsx takes a native openpyxl producer: per-cell provenance, no MinerU)
+                  (xlsx/json take native producers — openpyxl cells / json leaves — with per-unit
+                  provenance and no MinerU; only PDF/DOCX-type documents go through MinerU)
   → [detector]    rules + LLM locate sensitive fields → exact char offsets
   → [masker]      mask by field type (138****5678 / **** / keep head-tail N)
   → [image]       class- (face/YOLO) + text-driven (OCR → all text or matching fields) → PIL mosaic
   → [redact]      (PDF only, opt-in) offsets → page rects → redacted.pdf (glyphs deleted, mosaic)
-                  (xlsx only, opt-in) offsets → cell coords → redacted.xlsx (values replaced at source)
-  → output        sanitized.md + images_masked/ + audit.json
+                  (xlsx/json, always on) offsets → cells / leaves → redacted.xlsx / redacted.json
+  → output        sanitized.md + images_masked/ + audit.json (structured sources skip the md)
                   (--recoverable: audit.json also carries the ciphertext → restorable with --recover)
 ```
 
@@ -105,8 +106,9 @@ uv run pysanitize sample.xlsx --fields person_name,phone --audit
 uv run pysanitize sample.pdf --redact-pdf                     # writes output/<stem>/redacted.pdf
 uv run pysanitize sample.pdf --redact-pdf --redaction-style block   # solid box instead of mosaic
 
-# 5b) In-place Excel redaction (opt-in for xlsx inputs; hidden sheets included)
-uv run pysanitize sample.xlsx --redact-xlsx                   # writes output/<stem>/redacted.xlsx
+# 5b) Structured sources: values replaced in place — no flag needed, no sanitized.md
+uv run pysanitize sample.xlsx                                 # writes output/<stem>/redacted.xlsx (hidden sheets included)
+uv run pysanitize sample.json                                 # writes output/<stem>/redacted.json
 
 # 6) Field-driven image masking: OCR the images, mask only the matching fields
 uv run pysanitize sample.pdf --mask-images --image-text company_name,address
@@ -117,16 +119,18 @@ uv run pysanitize sample.pdf --recoverable
 uv run pysanitize output/sample/sanitized.md --recover          # md restores exactly
 uv run pysanitize output/sample/redacted.pdf --recover          # pdf: values back, layout approximate
 uv run pysanitize output/sample/redacted.xlsx --recover         # xlsx: per-cell exact, types restored
+uv run pysanitize output/sample/redacted.json --recover         # json: per-leaf exact, types restored
 ```
 
 Each run produces a job directory (default `output/<doc-name>/`):
 
 ```
 output/<doc-name>/
-├── sanitized.md            # sanitized Markdown (image links point into images_masked/)
+├── sanitized.md            # sanitized Markdown (document sources; xlsx/json inputs get none)
 ├── images_masked/          # every extracted image — masked copies, or originals when masking is off
 ├── redacted.pdf            # PDF inputs with --redact-pdf: original layout, regions deleted + mosaiced
-├── redacted.xlsx           # xlsx inputs with --redact-xlsx: cells replaced at source + workbook scrubbed
+├── redacted.xlsx           # xlsx inputs (always): cells replaced at source + workbook scrubbed
+├── redacted.json           # json inputs (always): leaf values replaced, structure/order preserved
 ├── audit.json              # public summary: hit counts + masked text, no raw values
 │                             with --recoverable: also each span's ciphertext + position
 └── .recover.key            # with --recoverable: the effective passphrase (0600), always materialized
@@ -158,15 +162,15 @@ result = sanitize_document(
     image_classes=["face"],     # image targets: face | text | <YOLO class>; empty = none
     image_fields=["company_name", "address"],  # None = same as fields; [] = no image-field masking
     redact_pdf=True,            # opt-in: also write redacted.pdf for PDF sources
-    redact_xlsx=True,           # opt-in: also write redacted.xlsx for xlsx sources
     redaction_style="mosaic",   # mosaic | block (PDF only)
     audit=False,
     recoverable=True,           # audit.json records ciphertext for --recover (needs the recover extra)
     recover_key="passphrase",   # else $PYSANITIZE_RECOVER_KEY, else generated — effective key → .recover.key
 )
-print(result.sanitized_md)     # Path
+print(result.sanitized_md)     # Path | None — structured sources (xlsx/json) ship no markdown
 print(result.redacted_pdf)     # Path | None (PDF sources with resolvable regions)
-print(result.redacted_xlsx)    # Path | None (xlsx sources with resolvable cells)
+print(result.redacted_xlsx)    # Path | None (xlsx sources — always produced)
+print(result.redacted_json)    # Path | None (json sources — always produced)
 print(result.detections)       # each with field_type / start / end / masked_value
 ```
 
@@ -249,7 +253,7 @@ MinerU only **reads** PDFs — it has no writer, so re-rendering would lose font
 
 ## 📊 Excel redaction (`redacted.xlsx`)
 
-With `--redact-xlsx`, xlsx sources additionally get a `redacted.xlsx`. A spreadsheet offers no overlay to draw — the sensitive bytes live in the cells — so redaction **replaces values at the source**:
+xlsx sources **always** get a `redacted.xlsx` (and no `sanitized.md` — the redacted workbook is the output). A spreadsheet offers no overlay to draw — the sensitive bytes live in the cells — so redaction **replaces values at the source**:
 
 - **Same-surface detection**: xlsx takes a native openpyxl producer (MinerU bypassed); every cell carries its `(sheet, row, col)` provenance in the document text, so detection runs on exactly the strings that get written back — the offset→cell mapping is exact *by construction*, never matched after the fact (displayed-vs-stored format divergence cannot happen)
 - **Hidden sheets included**: hidden / veryHidden sheets are parsed and redacted too — the classic place to park data
@@ -257,11 +261,20 @@ With `--redact-xlsx`, xlsx sources additionally get a `redacted.xlsx`. A spreads
 - **Formulas**: a cell whose displayed value is sensitive has its formula replaced by the mask; every other formula survives, with `fullCalcOnLoad` forcing recalculation on open
 - **Workbook-wide scrubbing**: docProps (creator/title/…), comments / sheet names / formula literals *echoing a detected value*, and chart series caches (strCache/numCache — Excel rebuilds them from the references) are all cleaned
 - **Byte-level verification**: after writing, every text member of the zip (sheets, shared strings, charts, comments, docProps, …) is searched for every detection value — including their `&#NNNNN;` character-reference form — and leftovers are reported loudly in `redaction_leftovers`, never silently
-- **Exact recovery**: `--recoverable` records each span's cell coordinates; `--recover` restores per cell, whole-cell numbers/dates **with their original python type** — stronger than the PDF's best-effort restore
+- **Exact recovery**: `--recoverable` records each span's cell coordinates **and the masked value's exact position inside the cell**; `--recover` splices by that recorded position, so a cell holding several look-alike placeholders (two masked names both `***`, or a literal `***` in the text) restores exactly — and whole-cell numbers/dates come back **with their original python type** — stronger than the PDF's best-effort restore
 
 Known edges (P2): comments are not independently detected (only scrubbed when echoing an already-detected value — a sensitive value that appears *only* in a comment is invisible; see `scripts/gen_demo_roster.py` for a demo); embedded images inside xlsx pass through with a warning; leftover pivot caches are reported by verification; openpyxl round-trips re-serialize some exotic features lossily — a known cost.
 
-- Opt-in: pass `--redact-xlsx`, or set `output.redact_xlsx: true` in `config/pipeline.yaml`; other formats are unaffected
+## 📦 JSON redaction (`redacted.json`)
+
+json sources **always** get a `redacted.json` (no `sanitized.md`, MinerU never invoked). Unlike a document, JSON has no page to preserve — the redacted file **is** the output, so it must stay a valid, faithful JSON document:
+
+- **Leaf provenance**: a native producer walks the parsed tree; every string leaf becomes one line of detection surface carrying its traversal path (`$.员工[0].备注`) — detection runs on exactly the values that get written back, the same by-construction guarantee as xlsx
+- **Structure untouched**: key order, nesting, untouched leaves, even indentation follow the source (2-space stays 2-space, minified stays minified); keys are schema, not data — a sensitive value echoed in a *key* is reported by verification, never rewritten
+- **Numbers & bools on the surface**: a number-typed phone `13812345678` or an integral float `5.0` is detected on its rendered text (`5`, never `5.0`); a masked numeric leaf becomes a string (JSON has no masked number), and recovery restores the original type
+- **One cell, several values**: a string holding two phones (or a planted literal `***` beside two masked names) is one leaf with several replacements — each placeholder's exact position in the final value is computed, not searched, so recovery splices by position and can never cross-restore look-alikes
+- **Data-level verification**: the output is re-loaded and walked — string leaves, rendered numbers/bools, and keys — reporting any surviving value with its json path
+- **Exact recovery**: `--recoverable` records each span's leaf path + type tag; `--recover` restores per leaf with types back (`13812345678` a number again). One documented edge: a rewritten value loses its embedded newlines (rendered flattened), exactly like a rewritten xlsx cell — untouched multi-line values keep theirs
 
 ## 🔁 Recoverable masking (`--recoverable` / `--recover`)
 
@@ -285,7 +298,7 @@ However the passphrase is provided, the **effective key is always written to `ou
 What the audit records (recovery mode only):
 
 - A `recovery` block — algorithm, KDF name, scrypt salt and parameters, ciphertext format. The salt is public by design; **key material never touches the audit** (it lives in `.recover.key`). Anyone holding the passphrase (or the keyfile) can recover; nobody without it can.
-- Per span: `encrypted_value` (the `ENC(v1:…)` ciphertext — `masked_value` stays the normal placeholder), `start`/`end` (offsets in the original text), `md` (where the placeholder sits in `sanitized.md`), `rects` (the redacted PDF rectangles), and `cells` (the redacted xlsx cell coordinates + type tags).
+- Per span: `encrypted_value` (the `ENC(v1:…)` ciphertext — `masked_value` stays the normal placeholder), `start`/`end` (offsets in the original text), `md` (where the placeholder sits in `sanitized.md`), `rects` (the redacted PDF rectangles), `cells` (the redacted xlsx cell coordinates + type tag), and `json` (the redacted json leaf's traversal path + type tag).
 
 How restoration works:
 
@@ -331,10 +344,10 @@ uv run pytest          # unit tests green
 
 ```
 pysanitize/
-├── parser/     MinerU wrapper (middle.json projection + v2 fallback) + ParsedDocument (line geometry / image pairing / offset mapping)
+├── parser/     MinerU wrapper (middle.json projection + v2 fallback) + native xlsx/json producers + ParsedDocument (line geometry / image pairing / offset mapping)
 ├── detector/   rules / llm / registry (overlap resolution) / image (face / YOLO classes / OCR text & field-driven)
 ├── masker/     text (offset masking) / image (mosaic)
-├── redact/     offsets → page rects (PDF) / cell coords (xlsx), redaction + verification
+├── redact/     offsets → page rects (PDF) / cell coords (xlsx) / leaf paths (json), redaction + verification
 ├── recover/    reversible tokens (AES-GCM + scrypt) and pipeline-independent restoration
 ├── pipeline.py sanitize_document() orchestration (the only public entry)
 ├── cli.py      argparse CLI
@@ -347,7 +360,7 @@ Extension points: **add a field** → edit `fields.yaml`; **add a detector** →
 
 ## 🗺️ Roadmap
 
-- **M2**: PDF redaction is shipped (`redacted.pdf`); Excel redaction is shipped (`redacted.xlsx`, incl. metadata/comment/chart-cache scrubbing); remaining: DOCX in-place editing, embedded xlsx images, independent comment detection, anonymized output names
+- **M2**: PDF redaction is shipped (`redacted.pdf`); Excel redaction is shipped (`redacted.xlsx`, incl. metadata/comment/chart-cache scrubbing); JSON redaction is shipped (`redacted.json`, leaf-provenance + offset-exact recovery); remaining: DOCX in-place editing, embedded xlsx images, independent comment detection, anonymized output names
 - **M3**: WebUI (upload + task queue + progress)
 
 ---

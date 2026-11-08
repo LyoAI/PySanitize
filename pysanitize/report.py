@@ -59,11 +59,12 @@ class AuditInfo:
     version: str = __version__
     redacted_pdf: str | None = None  # filename under out_dir, or None
     redacted_xlsx: str | None = None  # ditto, xlsx sources
-    redacted_pages: int = 0  # PDF pages, or sheets touched, for xlsx sources
-    redaction_regions: int = 0  # PDF rects, or cells rewritten, for xlsx sources
+    redacted_json: str | None = None  # ditto, json sources
+    redacted_pages: int = 0  # PDF pages, or sheets touched (xlsx)
+    redaction_regions: int = 0  # PDF rects, cells rewritten (xlsx), leaves (json)
     # (value, page) pairs still present in redacted.pdf after redaction —
     # values go to sensitive_report.json only; audit.json carries just counts.
-    # For xlsx sources the second element is the leaking zip member (a string).
+    # The second element is the leaking zip member (xlsx) or json path (json).
     redaction_leftovers: list[tuple[str, int | str]] = field(default_factory=list)
     # Recovery mode only: the cipher parameter block (never key material) and
     # per-span recovery data — ciphertext + placeholder range in sanitized.md
@@ -93,6 +94,7 @@ def write_audit(info: AuditInfo, out_dir: Path) -> Path:
         "redaction": {
             "pdf": info.redacted_pdf,
             "xlsx": info.redacted_xlsx,
+            "json": info.redacted_json,
             "pages": info.redacted_pages,
             "regions": info.redaction_regions,
             # Raw-free: counts only — the leaked values+pages live in

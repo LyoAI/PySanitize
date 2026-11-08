@@ -28,7 +28,7 @@ def run_sanitizer(
     """Run one sanitize job with UI-supplied parameters.
 
     Args:
-        doc_path: PDF / image / docx / pptx / xlsx file.
+        doc_path: PDF / image / docx / pptx / xlsx / json file.
         extra_requirements: free-text detection requirements from the user,
             appended to the LLM system prompt for this run only (cleared in a
             ``finally`` so it never leaks into later runs).
@@ -39,7 +39,7 @@ def run_sanitizer(
             ``fields``, ``llm_model``, ``llm_provider``, ``mask_images``,
             ``image_classes``, ``image_fields``, ``image_backend``,
             ``image_model_path``, ``score_threshold``, ``mosaic_factor``,
-            ``redact_pdf``, ``redact_xlsx``, ``redaction_style``, ``audit``,
+            ``redact_pdf``, ``redaction_style``, ``audit``,
             ``recoverable``, ``recover_key``, ``out_dir``,
             ``mineru_backend``, ``mineru_out_dir``, ``lang``.
 

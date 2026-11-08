@@ -70,6 +70,24 @@ class CellBox(NamedTuple):
     # the block index would drift; recovery/redaction key off this instead
 
 
+class JsonBox(NamedTuple):
+    """One JSON leaf value inside a block (the json native producer).
+
+    The JSON analog of :class:`CellBox`: ``start``/``end`` are char offsets of
+    ``text`` within the block's text (one leaf per line), ``path`` is the
+    traversal route from the document root (dict keys / list indices) —
+    write-back navigates it and splices the placeholder into the string value.
+    ``kind`` is the JSON type tag ("str"/"int"/"float"/"bool") so ``--recover``
+    can restore numbers and bools, not just strings.
+    """
+
+    text: str
+    path: tuple["str | int", ...]
+    start: int  # char offset of ``text`` in the block text
+    end: int  # exclusive
+    kind: str = "str"
+
+
 @dataclass
 class BBox:
     """Axis-aligned bounding box in page-pixel coordinates.
@@ -126,6 +144,7 @@ class Block:
     bbox: BBox | None = None  # whole-block geometry (PDF/images only)
     line_boxes: list[LineBox] | None = None  # per-line text + box + char range (M2)
     cells: list[CellBox] | None = None  # per-cell text + coords + char range (xlsx)
+    json_boxes: list[JsonBox] | None = None  # per-leaf text + path + char range (json)
     image_path: Path | None = None  # extracted image file for image blocks
     image_bbox: BBox | None = None  # where the image sits on the page
 

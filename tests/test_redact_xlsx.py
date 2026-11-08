@@ -190,16 +190,13 @@ def test_sheet_name_scrub_keeps_uniqueness(tmp_path: Path):
 
 
 def test_sanitize_document_xlsx_end_to_end(xlsx: Path, tmp_path: Path):
-    result = sanitize_document(
-        xlsx, detector="rules", redact_xlsx=True, out_dir=tmp_path / "out"
-    )
+    result = sanitize_document(xlsx, detector="rules", out_dir=tmp_path / "out")
     assert result.redacted_xlsx.is_file()
     assert result.redaction_leftovers == []
     assert result.redacted_pdf is None
-
-    md = result.sanitized_md.read_text(encoding="utf-8")
-    assert "138****5678" in md and "13812345678" not in md
-    assert "110101********8515" in md and "110101199003078515" not in md
+    # structured sources ship no markdown — the redacted workbook IS the output
+    assert result.sanitized_md is None
+    assert not (tmp_path / "out" / "sanitized.md").exists()
 
     audit = json.loads(result.audit_path.read_text(encoding="utf-8"))
     assert "13812345678" not in json.dumps(audit, ensure_ascii=False)
@@ -216,7 +213,6 @@ def test_recoverable_round_trip_is_exact(xlsx: Path, tmp_path: Path):
     result = sanitize_document(
         xlsx,
         detector="rules",
-        redact_xlsx=True,
         recoverable=True,
         recover_key="pw",
         out_dir=tmp_path / "out",
@@ -225,6 +221,12 @@ def test_recoverable_round_trip_is_exact(xlsx: Path, tmp_path: Path):
     spans = audit["masked_spans"]
     assert spans and all("cells" in s for s in spans)
     assert all("idx" in c and "kind" in c for s in spans for c in s["cells"])
+    # every cell carries the placeholder's exact position in the masked value —
+    # recovery splices by offset, never by string matching
+    assert all(
+        isinstance(c["masked_start"], int) and c["masked_end"] == c["masked_start"] + len(s["masked_value"])
+        for s in spans for c in s["cells"]
+    )
 
     rec = recover_file(result.redacted_xlsx, passphrase="pw")
     assert rec.kind == "xlsx" and rec.unresolved == 0 and rec.restored > 0
@@ -239,20 +241,62 @@ def test_recoverable_round_trip_is_exact(xlsx: Path, tmp_path: Path):
     assert sal["A2"].value == "张三" and sal["B2"].value == 25000.5
 
 
-def test_redaction_off_by_default(xlsx: Path, tmp_path: Path):
-    result = sanitize_document(xlsx, detector="rules", out_dir=tmp_path / "out")
-    assert result.redacted_xlsx is None
-    assert not (tmp_path / "out" / "redacted.xlsx").exists()
+def test_multi_span_cell_restores_by_offset(xlsx: Path, tmp_path: Path):
+    """One cell, two detections, plus a literal ``***`` planted *before* them.
 
+    String matching would restore the literal's first occurrence and corrupt
+    the cell; recorded offsets put each value back at its own spot.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = "备注:*** 原始占位 张三 13812345678"
+    path = tmp_path / "m.xlsx"
+    wb.save(path)
 
-def test_recoverable_without_redaction_still_records_cells(xlsx: Path, tmp_path: Path):
     result = sanitize_document(
-        xlsx,
-        detector="rules",
-        recoverable=True,
-        recover_key="pw",
-        out_dir=tmp_path / "out",
+        path, detector="rules", recoverable=True, recover_key="pw", out_dir=tmp_path / "out"
     )
-    assert result.redacted_xlsx is None
+    values = [d.value for d in result.detections]
+    assert "张三" in values and "13812345678" in values
+    masked = load_workbook(result.redacted_xlsx)["Sheet"]["A1"].value
+    assert masked.count("***") == 3  # the literal + two placeholders, indistinguishable
+
+    rec = recover_file(result.redacted_xlsx, passphrase="pw")
+    assert rec.unresolved == 0
+    restored = load_workbook(rec.output)["Sheet"]["A1"].value
+    assert restored == "备注:*** 原始占位 张三 13812345678"
+
+
+def test_resolve_repl_masked_offsets_are_consistent(xlsx: Path, tmp_path: Path):
+    """Each repl's masked span in the final value is pure arithmetic — splicing
+    by relative offsets and by masked offsets yields the same string."""
+    doc, detections, edits = _run_redact(xlsx, tmp_path / "out.xlsx")
+    assert edits
+    for e in edits:
+        rel_spliced = e.text
+        for rs, re_, masked, *_ in sorted(e.repls, key=lambda r: -r[0]):
+            rel_spliced = rel_spliced[:rs] + masked + rel_spliced[re_:]
+        for rs, re_, masked, ds, de, ms, me in e.repls:
+            assert ms >= 0 and me == ms + len(masked)
+            assert rel_spliced[ms:me] == masked  # both splice paths agree
+
+
+def test_legacy_audit_without_offsets_still_recovers(xlsx: Path, tmp_path: Path):
+    """Audits recorded before the offset upgrade (no masked_start) recover via
+    the old left-to-right match — old artifacts stay restorable."""
+    result = sanitize_document(
+        xlsx, detector="rules", recoverable=True, recover_key="pw", out_dir=tmp_path / "out"
+    )
     audit = json.loads(result.audit_path.read_text(encoding="utf-8"))
-    assert all("cells" in s for s in audit["masked_spans"])
+    for s in audit["masked_spans"]:
+        for c in s.get("cells", []):
+            c.pop("masked_start", None)
+            c.pop("masked_end", None)
+    stripped = tmp_path / "legacy_audit.json"
+    stripped.write_text(json.dumps(audit, ensure_ascii=False), encoding="utf-8")
+
+    rec = recover_file(result.redacted_xlsx, audit_path=stripped, passphrase="pw")
+    assert rec.unresolved == 0
+    rb = load_workbook(rec.output)
+    assert rb.worksheets[0]["A2"].value == "张三"
+    assert rb.worksheets[0]["B2"].value == 13812345678

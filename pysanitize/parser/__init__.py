@@ -1,6 +1,6 @@
-"""Document parsing: MinerU wrapper + native xlsx producer → ``ParsedDocument``."""
+"""Document parsing: MinerU wrapper + native xlsx/json producers → ``ParsedDocument``."""
 
-from .blocks import BBox, Block, CellBox, ExtractedImage, META_TYPES
+from .blocks import BBox, Block, CellBox, ExtractedImage, META_TYPES, JsonBox
 from .document import ParsedDocument, build_document, parse_document
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "CellBox",
     "ExtractedImage",
     "META_TYPES",
+    "JsonBox",
     "ParsedDocument",
     "build_document",
     "parse_document",

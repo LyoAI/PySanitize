@@ -48,11 +48,15 @@ _TEXT_SUFFIXES = frozenset({".xml", ".rels", ".vml"})
 class CellEdit:
     """One cell to rewrite: the original rendered text + masked segments.
 
-    ``repls`` are ``(rel_start, rel_end, placeholder)`` spans within ``text``
-    (block-relative to the cell, sorted ascending); splicing them right to
-    left yields the masked cell value. Each keeps its detection's global
-    ``start``/``end`` so the pipeline can record cells per span for
-    ``--recover``.
+    ``repls`` are ``(rel_start, rel_end, placeholder, d_start, d_end,
+    masked_start, masked_end)`` spans within ``text`` (block-relative to the
+    cell, sorted ascending); splicing them right to left yields the masked
+    cell value. ``d_start``/``d_end`` keep the detection's global span so the
+    pipeline can record cells per span for ``--recover``;
+    ``masked_start``/``masked_end`` are where the placeholder lands in the
+    *final* masked value — recovery splices by that recorded position, never
+    by string matching, so a cell holding several look-alike placeholders
+    (two masked names both ``***``) restores exactly.
     """
 
     sheet: str
@@ -61,7 +65,7 @@ class CellEdit:
     col: int  # 1-based
     text: str  # the cell's rendered original (what detectors saw)
     kind: str = "str"
-    repls: list[tuple[int, int, str, int, int]] = field(default_factory=list)
+    repls: list[tuple[int, int, str, int, int, int, int]] = field(default_factory=list)
     start: int = -1
     end: int = -1
 
@@ -103,13 +107,29 @@ def resolve_cells(
                     edits[key] = edit
                 piece = cell.text[clo - cell.start : chi - cell.start]
                 edit.repls.append(
-                    (clo - cell.start, chi - cell.start, mask_map[d.field_type].mask(piece), d.start, d.end)
+                    (clo - cell.start, chi - cell.start, mask_map[d.field_type].mask(piece), d.start, d.end, -1, -1)
                 )
     out = list(edits.values())
     for edit in out:
-        edit.repls.sort()
+        _fill_masked_offsets(edit.repls)
         edit.start, edit.end = edit.repls[0][3], edit.repls[-1][4]
     return out
+
+
+def _fill_masked_offsets(repls: list[tuple]) -> None:
+    """Sort ``repls`` ascending and fill each one's ``masked_start``/``masked_end``.
+
+    Positions are computed, never searched: applying the replacements left to
+    right, a placeholder lands at ``rel_start`` plus the accumulated length
+    delta of everything before it. Pure arithmetic on the same data the
+    redactor splices, so redact and recover agree by construction.
+    """
+    repls.sort(key=lambda r: r[0])
+    shift = 0
+    for i, (rs, re_, masked, ds, de, _, _) in enumerate(repls):
+        ms = rs + shift
+        repls[i] = (rs, re_, masked, ds, de, ms, ms + len(masked))
+        shift += len(masked) - (re_ - rs)
 
 
 def redact_xlsx(
@@ -137,7 +157,7 @@ def redact_xlsx(
     wb = load_workbook(Path(doc_path), data_only=False)
     for edit in edits:
         text = edit.text
-        for rel_start, rel_end, masked, _, _ in sorted(edit.repls, reverse=True):
+        for rel_start, rel_end, masked, _, _, _, _ in sorted(edit.repls, key=lambda r: -r[0]):
             text = text[:rel_start] + masked + text[rel_end:]
         ws = wb.worksheets[edit.sheet_idx] if 0 <= edit.sheet_idx < len(wb.worksheets) else wb[edit.sheet]
         ws.cell(row=edit.row, column=edit.col).value = text

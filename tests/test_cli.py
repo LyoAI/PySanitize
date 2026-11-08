@@ -37,7 +37,7 @@ def test_parser_shape():
     args = build_parser().parse_args(
         ["a.pdf", "--detector", "hybrid", "--fields", "phone,person_name",
          "--mask-images", "--image-backend", "yunet", "--audit", "--redact-pdf",
-         "--redact-xlsx", "--out-dir", "o"]
+         "--out-dir", "o"]
     )
     assert args.file == "a.pdf"
     assert args.detector == "hybrid"
@@ -45,7 +45,6 @@ def test_parser_shape():
     assert args.image_backend == "yunet"
     assert args.audit is True
     assert args.redact_pdf is True
-    assert args.redact_xlsx is True
     assert args.out_dir == "o"
     assert args.launch is None
 
@@ -158,24 +157,25 @@ def test_sanitize_handles_missing_file(monkeypatch, capsys):
     assert e.value.code == 1
 
 
-def test_redact_xlsx_flag_reaches_pipeline(monkeypatch, capsys, tmp_path):
+def test_structured_artifacts_printed(monkeypatch, capsys, tmp_path):
+    """xlsx/json sources ship no sanitized.md — their redacted artifact is the
+    output, and the CLI says so without touching the md line."""
     from pysanitize.pipeline import SanitizeResult
 
-    called = {}
-
     def fake_sanitize(doc_path, **kw):
-        called.update(kw)
         return SanitizeResult(
-            doc_id="d", out_dir=tmp_path, sanitized_md=tmp_path / "sanitized.md",
+            doc_id="d", out_dir=tmp_path, sanitized_md=None,
             audit_path=tmp_path / "audit.json", sensitive_report_path=None,
             detections=[], images_total=0, images_masked=0, duration_s=0.1,
-            detector="rules", fields=[], redacted_xlsx=tmp_path / "redacted.xlsx",
+            detector="rules", fields=[],
+            redacted_xlsx=tmp_path / "redacted.xlsx",
+            redacted_json=tmp_path / "redacted.json",
         )
 
     monkeypatch.setattr("pysanitize.pipeline.sanitize_document", fake_sanitize)
     with pytest.raises(SystemExit) as e:
-        main(["a.xlsx", "--redact-xlsx"])
+        main(["a.xlsx"])
     assert e.value.code == 0
-    assert called["redact_xlsx"] is True
-    assert called["redact_pdf"] is None  # pdf flag untouched
-    assert "redacted.xlsx" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "redacted.xlsx" in out and "redacted.json" in out
+    assert "Sanitized document" not in out  # no md for structured sources

@@ -1,20 +1,23 @@
-"""Restore originals from sanitized artifacts (``sanitized.md`` / ``redacted.pdf``).
+"""Restore originals from sanitized artifacts (``sanitized.md`` / ``redacted.*``).
 
 Pure consumers: they read the artifact + its ``audit.json`` + a passphrase and
 write ``<stem>_recovered.<ext>`` beside the input. The sanitize pipeline is
 never imported — recovery only needs the audit's ``recovery`` block and the
 per-span data recorded next to each placeholder (``encrypted_value`` + ``md``
-range + ``rects``).
+range + ``rects`` + ``cells`` / ``json`` positions).
 
 Markdown recovery is exact: each span records where its placeholder sits, so
 restoration splices the decrypted value back at that range (verified against
-the placeholder text). XLSX recovery is exact too, and per cell: each span
-records the ``(sheet, row, col)`` it touched, so placeholders are swapped for
-decrypted values in place, with the original python type restored for
-whole-cell numeric/date masks. PDF recovery is best-effort: the original
-glyphs were truly *deleted* at sanitize time, so recovery clears the redacted
-region and re-inserts the decrypted text with a fitted font — the values come
-back, the original layout does not.
+the placeholder text). XLSX and JSON recovery are exact too, and positional:
+each span records the cell ``(sheet, row, col)`` / leaf path it touched plus
+where its placeholder sits inside that cell/leaf's masked value, so
+restoration splices by recorded position — a cell or string holding several
+look-alike placeholders (two masked names both ``***``) still restores each
+detection to its own spot, and the original python/JSON type comes back for
+whole-value numeric/date/bool masks. PDF recovery is best-effort: the
+original glyphs were truly *deleted* at sanitize time, so recovery clears the
+redacted region and re-inserts the decrypted text with a fitted font — the
+values come back, the original layout does not.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ class RecoverResult:
     output: Path
     restored: int  # placeholders replaced with plaintext
     unresolved: int  # audit spans missing from the artifact / undecryptable
-    kind: str  # "markdown" | "pdf" | "xlsx"
+    kind: str  # "markdown" | "pdf" | "xlsx" | "json"
 
 
 def load_audit(input_path: Path, audit_path: Path | None = None) -> dict:
@@ -90,6 +93,8 @@ def recover_file(
         return _recover_pdf(input_path, cipher, audit, out_path)
     if input_path.suffix.lower() == ".xlsx":
         return _recover_xlsx(input_path, cipher, audit, out_path)
+    if input_path.suffix.lower() == ".json":
+        return _recover_json(input_path, cipher, audit, out_path)
     return _recover_markdown(input_path, cipher, audit, out_path)
 
 
@@ -160,11 +165,15 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
     """Restore original cell values in a ``redacted.xlsx`` — exact, per cell.
 
     Each recoverable span records the cells its detection touched (sheet index
-    + row/col + the original value's type tag). Placeholders are replaced with
-    the decrypted values left to right (a cell may hold several); a span whose
-    placeholder no longer sits in its cell is counted unresolved — the file
-    was edited after sanitizing. Whole-cell numeric/date masks come back with
-    their original python type, not as strings.
+    + row/col + type tag) and, since the offset upgrade, where its placeholder
+    sits inside the masked cell value. Restoration splices by that recorded
+    position — a cell holding several look-alike placeholders (two masked
+    names both ``***``) puts each decrypted value back at its own spot;
+    string matching could not tell them apart. Spans from audits recorded
+    before the upgrade (no positions) fall back to left-to-right matching.
+    A span whose placeholder no longer sits where it was recorded counts
+    unresolved — the file was edited after sanitizing. Whole-cell numeric/
+    date masks come back with their original python type, not as strings.
     """
     import datetime as dt
 
@@ -173,38 +182,72 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
     wb = load_workbook(xlsx_path, data_only=False)
     spans = audit_spans(audit)
     placed = [s for s in spans if s.get("cells")]
-    restored = 0
     # Cells with a single span that covered the whole cell: restore the type.
-    per_cell: dict[tuple, list[dict]] = {}
-    for span in placed:
-        for cell in span["cells"]:
-            key = (cell.get("idx", -1), cell["row"], cell["col"])
-            per_cell.setdefault(key, []).append(span)
-
-    for span in placed:  # audit order == reading order == placeholder order
+    per_cell: dict[tuple, list[int]] = {}
+    # Offset splices grouped per cell: every span's edit for one cell applies
+    # together, highest position first, so recorded ranges stay valid and
+    # look-alike placeholders can never cross-restore.
+    by_cell: dict[tuple, list[tuple[int, int, str, str, int]]] = {}
+    for i, span in enumerate(placed):
         try:
             value = cipher.decrypt_token(span["encrypted_value"])
         except Exception:  # wrong key / tampered ciphertext
             continue
-        ok = False
+        masked = span.get("masked_value", "")
         for cell in span["cells"]:
+            key = (cell.get("idx", -1), cell["row"], cell["col"])
+            per_cell.setdefault(key, []).append(i)
+            ms, me = cell.get("masked_start"), cell.get("masked_end")
+            if ms is not None and me is not None:
+                by_cell.setdefault(key, []).append((ms, me, value, masked, i))
+
+    ok_spans: set[int] = set()
+    for (idx, row, col), items in by_cell.items():
+        if not 0 <= idx < len(wb.worksheets):
+            continue
+        ws = wb.worksheets[idx]
+        current = ws.cell(row=row, column=col).value
+        text = "" if current is None else str(current)
+        if any(not 0 <= ms <= me <= len(text) or text[ms:me] != masked
+               for ms, me, _, masked, _ in items):
+            continue  # placeholder moved — the file was edited after sanitizing
+        for ms, me, value, _, _ in sorted(items, key=lambda t: -t[0]):
+            text = text[:ms] + value + text[me:]
+        ws.cell(row=row, column=col).value = text
+        ok_spans.update(i for _, _, _, _, i in items)
+
+    # Legacy audits (pre-offset): match the placeholder text left to right.
+    for i, span in enumerate(placed):
+        if i in ok_spans:
+            continue
+        try:
+            value = cipher.decrypt_token(span["encrypted_value"])
+        except Exception:
+            continue
+        masked = span.get("masked_value", "")
+        for cell in span["cells"]:
+            if cell.get("masked_start") is not None:
+                continue
             idx, row, col = cell.get("idx", -1), cell["row"], cell["col"]
             if not 0 <= idx < len(wb.worksheets):
                 continue
             ws = wb.worksheets[idx]
             current = ws.cell(row=row, column=col).value
             text = "" if current is None else str(current)
-            masked = span.get("masked_value", "")
             if masked and masked in text:
                 ws.cell(row=row, column=col).value = text.replace(masked, value, 1)
-                ok = True
-        restored += 1 if ok else 0
+                ok_spans.add(i)
+
     # Type restore: one span, one cell, current value == decrypted value.
-    for (idx, row, col), members in per_cell.items():
-        if len(members) != 1 or not 0 <= idx < len(wb.worksheets):
+    for (idx, row, col), span_idxs in per_cell.items():
+        if len(set(span_idxs)) != 1 or not 0 <= idx < len(wb.worksheets):
             continue
-        span = members[0]
-        kind = span["cells"][0].get("kind", "str")
+        span = placed[span_idxs[0]]
+        key_cell = next(
+            (c for c in span["cells"] if (c.get("idx", -1), c["row"], c["col"]) == (idx, row, col)),
+            {},
+        )
+        kind = key_cell.get("kind", "str")
         if kind in ("str", "formula"):
             continue
         try:
@@ -231,8 +274,86 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
             continue
     target = _target_for(xlsx_path, out_path)
     wb.save(target)
-    unresolved = len(placed) - restored
-    return RecoverResult(target, restored, unresolved, "xlsx")
+    unresolved = len(placed) - len(ok_spans)
+    return RecoverResult(target, len(ok_spans), unresolved, "xlsx")
+
+
+def _recover_json(json_path: Path, cipher: TokenCipher, audit: dict, out_path) -> RecoverResult:
+    """Restore original leaf values in a ``redacted.json`` — exact, by position.
+
+    Each recoverable span records the leaf's traversal path plus where its
+    placeholder sits inside the leaf's masked value, so a string holding
+    several look-alike placeholders restores each detection to its own spot
+    (splice highest position first; every slice is verified against the
+    recorded placeholder before anything is written). Whole-leaf number/bool
+    masks come back with their JSON type, not as strings. Output formatting
+    follows the redacted file the same way redaction followed the source.
+    """
+    raw = json_path.read_text(encoding="utf-8-sig")
+    data = json.loads(raw)
+    spans = audit_spans(audit)
+    placed = [s for s in spans if s.get("json")]
+    per_leaf: dict[tuple, list[tuple[int, int, str, str, int]]] = {}
+    for i, span in enumerate(placed):
+        try:
+            value = cipher.decrypt_token(span["encrypted_value"])
+        except Exception:  # wrong key / tampered ciphertext
+            continue
+        loc = span["json"]
+        per_leaf.setdefault(tuple(loc["path"]), []).append(
+            (loc["masked_start"], loc["masked_end"], value, span.get("masked_value", ""), i)
+        )
+
+    ok_spans: set[int] = set()
+    for path, items in per_leaf.items():
+        try:
+            node = data
+            for k in path:
+                node = node[k]
+            parent = data
+            for k in path[:-1]:
+                parent = parent[k]
+        except (KeyError, IndexError, TypeError):
+            continue  # structure changed after sanitizing
+        if not isinstance(node, str) or isinstance(parent, (str, int, float, bool)):
+            continue
+        if any(not 0 <= ms <= me <= len(node) or node[ms:me] != masked
+               for ms, me, _, masked, _ in items):
+            continue  # placeholder moved — the file was edited after sanitizing
+        text = node
+        for ms, me, value, _, _ in sorted(items, key=lambda t: -t[0]):
+            text = text[:ms] + value + text[me:]
+        # Whole-leaf number/bool masks come back with their JSON type.
+        if len(items) == 1:
+            kind = placed[items[0][4]]["json"].get("kind", "str")
+            value = items[0][2]
+            if kind == "int" and text == value:
+                try:
+                    text = int(text)
+                except ValueError:
+                    pass
+            elif kind == "float" and text == value:
+                try:
+                    text = float(text)
+                except ValueError:
+                    pass
+            elif kind == "bool" and text == value:
+                text = text == "true"
+        parent[path[-1]] = text
+        ok_spans.update(i for _, _, _, _, i in items)
+
+    target = _target_for(json_path, out_path)
+    # Formatting follows the artifact, same sniff as pysanitize.redact.json.
+    newline = "\n" if raw.endswith("\n") else ""
+    second = raw.split("\n", 1)[1] if "\n" in raw else ""
+    indent = None
+    if second[:1] in (" ", "\t"):
+        indent = second[: len(second) - len(second.lstrip(" \t"))]
+    target.write_text(
+        json.dumps(data, ensure_ascii=False, indent=indent) + newline, encoding="utf-8"
+    )
+    unresolved = len(placed) - len(ok_spans)
+    return RecoverResult(target, len(ok_spans), unresolved, "json")
 
 
 def _insert_values(page, spans, values) -> int:

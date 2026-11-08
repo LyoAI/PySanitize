@@ -120,8 +120,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recover", dest="recover", action="store_true",
                         help=(
                             "restore a sanitized document: <file> is the "
-                            "sanitized.md / redacted.pdf, audit.json must sit "
-                            "beside it (or pass --recover-audit)"
+                            "sanitized.md / redacted.pdf / redacted.xlsx / "
+                            "redacted.json, audit.json must sit beside it "
+                            "(or pass --recover-audit)"
                         ))
     parser.add_argument(
         "--recover-audit", dest="recover_audit",
@@ -130,13 +131,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redact-pdf", dest="redact_pdf", action="store_true",
                         help="also write a layout-preserving redacted.pdf for PDF inputs (off by default)")
     parser.set_defaults(redact_pdf=None)
-    parser.add_argument("--redact-xlsx", dest="redact_xlsx", action="store_true",
-                        help=(
-                            "also write redacted.xlsx for Excel inputs — sensitive "
-                            "cells replaced at the source, metadata/comments/chart "
-                            "caches scrubbed (off by default)"
-                        ))
-    parser.set_defaults(redact_xlsx=None)
     parser.add_argument(
         "--redaction-style", choices=("mosaic", "block"),
         help="PDF redaction style (default mosaic)",
@@ -225,7 +219,6 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         mosaic_factor=args.mosaic_factor,
         score_threshold=args.score_threshold,
         redact_pdf=args.redact_pdf,
-        redact_xlsx=args.redact_xlsx,
         redaction_style=args.redaction_style,
         audit=args.audit,
         recoverable=args.recoverable,
@@ -236,7 +229,8 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         lang=args.lang,
     )
     print(f"Output directory: {result.out_dir}")
-    print(f"  Sanitized document: {result.sanitized_md}")
+    if result.sanitized_md:
+        print(f"  Sanitized document: {result.sanitized_md}")
     print(
         f"  Text masks {len(result.detections)} · images mosaiced "
         f"{result.images_masked}/{result.images_total} · took {result.duration_s:.1f}s"
@@ -245,9 +239,15 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         print(f"  Redacted PDF: {result.redacted_pdf}")
     if result.redacted_xlsx:
         print(f"  Redacted XLSX: {result.redacted_xlsx}")
+    if result.redacted_json:
+        print(f"  Redacted JSON: {result.redacted_json}")
     if result.redaction_leftovers:
-        pages = ",".join(str(p) for p in sorted({p for _, p in result.redaction_leftovers}))
-        artifact = result.redacted_xlsx.name if result.redacted_xlsx else "redacted.pdf"
+        pages = ",".join(str(p) for p in sorted({str(p) for _, p in result.redaction_leftovers}))
+        artifact = (
+            result.redacted_json.name
+            if result.redacted_json
+            else (result.redacted_xlsx.name if result.redacted_xlsx else "redacted.pdf")
+        )
         print(
             f"  ⚠ {len(result.redaction_leftovers)} sensitive values still "
             f"present in {artifact} ({pages})"

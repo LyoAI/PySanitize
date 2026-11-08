@@ -15,17 +15,17 @@
 
 </div>
 
-对 **PDF / DOCX / Excel / 扫描件** 做敏感信息脱敏，全程**纯本地**解析（依托 [MinerU](https://github.com/opendatalab/MinerU)），无云端调用。
+对 **PDF / DOCX / Excel / JSON / 扫描件** 做敏感信息脱敏，全程**纯本地**解析（依托 [MinerU](https://github.com/opendatalab/MinerU)），无云端调用。
 
 ## ✨ 特性
 
 | | |
 |---|---|
-| 🧩 **多格式输入** | PDF / 图片 / DOCX / PPTX / XLSX 一次解析成统一结构 |
+| 🧩 **多格式输入** | PDF / 图片 / DOCX / PPTX / XLSX / JSON 一次解析成统一结构 |
 | 🔍 **规则 + LLM 双引擎** | 正则+词典启发式（离线可用）；LLM 只做**定位**不重写，回匹配防幻觉 |
 | 🖼️ **图片脱敏** | `face` / 任意 YOLO 类别（检测模型），**以及按文字**：裸 `--image-text` 打码图片里全部印刷文字，或传字段列表只打码命中的敏感字段（如印章上的公司名）→ 马赛克 |
 | 📄 **PDF 打码** | `--redact-pdf` 产出保留排版的 `redacted.pdf` —— 敏感字符**真删除**后盖马赛克，表格边框保留 |
-| 📊 **Excel 打码** | `--redact-xlsx` 产出 `redacted.xlsx` —— 敏感单元格**源头改值**（含隐藏表），并擦洗批注/公式字面量/表名/图表缓存/文档属性，全簿字节级校验零残留 |
+| 📊 **Excel / JSON 打码** | xlsx / json 输入直接产出 `redacted.xlsx` / `redacted.json` —— 值**源头改写**（不产 md、不经 MinerU），并擦洗批注/公式字面量/表名/图表缓存/文档属性，字节级校验零残留；一个单元格多个掩码值也按位置精确还原 |
 | 🔁 **可恢复脱敏** | `--recoverable` 把每个敏感值的密文记入 `audit.json`；`pysanitize --recover` 用口令还原原始文档——脱敏文档本身与普通脱敏结果完全一致 |
 | 🔌 **供应商可切换** | `--provider openai \| claude \| openrouter`，在同一模型 yaml 里选 provider 段 |
 | 📊 **审计友好** | 公开摘要不含原文；含原文报告 `--audit` 才生成 |
@@ -34,15 +34,16 @@
 ## 🔄 处理流程
 
 ```text
-输入(PDF/DOCX/Excel/扫描件)
+输入(PDF/DOCX/Excel/JSON/扫描件)
   → [parser]      MinerU middle.json（逐行几何坐标）→ ParsedDocument{text, blocks, images/}
-                  （xlsx 走 openpyxl 原生解析：单元格级溯源，不经 MinerU）
+                  （xlsx/json 走原生解析——openpyxl 单元格 / json 叶子——带单元级溯源、不经 MinerU；
+                  只有 PDF/DOCX 这类文档才走 MinerU）
   → [detector]    规则 + LLM 定位敏感字段 → 精确字符 offset
   → [masker]      按字段类型掩码（138****5678 / **** / 保前后N位）
   → [image]       按类别（人脸/YOLO）+ 按文字（OCR → 全部文字或命中字段）→ PIL 马赛克
   → [redact]      （仅 PDF，可选）offset → 页面矩形 → redacted.pdf（真删字 + 马赛克）
-                  （仅 xlsx，可选）offset → 单元格坐标 → redacted.xlsx（源头改值 + 全簿擦洗）
-  → 输出  sanitized.md + images_masked/ + audit.json
+                  （xlsx/json，始终开启）offset → 单元格 / 叶子 → redacted.xlsx / redacted.json
+  → 输出  sanitized.md + images_masked/ + audit.json（结构化输入不产 md）
                   （--recoverable：audit.json 额外记录密文 → 可用 --recover 还原）
 ```
 
@@ -101,8 +102,9 @@ uv run pysanitize 样例.xlsx --fields person_name,phone --audit
 uv run pysanitize 样例.pdf --redact-pdf                     # 产出 output/<文档名>/redacted.pdf
 uv run pysanitize 样例.pdf --redact-pdf --redaction-style block   # 纯色块代替马赛克
 
-# 5b) Excel 原位打码（xlsx 输入可选，加 --redact-xlsx 开启；隐藏表一并处理）
-uv run pysanitize 样例.xlsx --redact-xlsx                   # 产出 output/<文档名>/redacted.xlsx
+# 5b) 结构化输入：源头改值——无需任何开关，不产 sanitized.md
+uv run pysanitize 样例.xlsx                                 # 产出 output/<文档名>/redacted.xlsx（隐藏表一并处理）
+uv run pysanitize 样例.json                                 # 产出 output/<文档名>/redacted.json
 
 # 6) 按字段的图片脱敏：OCR 图片，只打码命中的字段
 uv run pysanitize 样例.pdf --mask-images --image-text company_name,address
@@ -113,16 +115,18 @@ uv run pysanitize 样例.pdf --recoverable
 uv run pysanitize output/样例/sanitized.md --recover          # md 精确还原
 uv run pysanitize output/样例/redacted.pdf --recover          # pdf：值还原，排版近似
 uv run pysanitize output/样例/redacted.xlsx --recover         # xlsx：逐格精确还原（含原类型）
+uv run pysanitize output/样例/redacted.json --recover         # json：逐叶子精确还原（含原类型）
 ```
 
 每次运行产出一个任务目录（默认 `output/<文档名>/`）：
 
 ```
 output/<文档名>/
-├── sanitized.md            # 脱敏后的 Markdown（图片链接指向 images_masked/）
+├── sanitized.md            # 脱敏后的 Markdown（文档类输入；xlsx/json 输入不产此文件）
 ├── images_masked/          # 每张抽取图——打码副本；未打码时即原图
 ├── redacted.pdf            # 仅 PDF 输入 + --redact-pdf：保留原排版，敏感区域真删字 + 马赛克
-├── redacted.xlsx           # 仅 xlsx 输入 + --redact-xlsx：敏感单元格源头改值 + 全簿擦洗
+├── redacted.xlsx           # xlsx 输入（始终产出）：敏感单元格源头改值 + 全簿擦洗
+├── redacted.json           # json 输入（始终产出）：叶子值替换，结构与键序保留
 ├── audit.json              # 公开审计摘要：字段命中数 + 掩码后文本，不含敏感原文
 │                             --recoverable 时额外记录每个 span 的密文与位置
 └── .recover.key            # --recoverable 时生效口令文件（0600），始终落盘
@@ -154,15 +158,15 @@ result = sanitize_document(
     image_classes=["face"],     # 图片打码目标：face | text | <YOLO 类别>；空=不处理
     image_fields=["company_name", "address"],  # None=跟随正文字段；[]=不做图片字段检测
     redact_pdf=True,            # 可选：PDF 输入额外产出 redacted.pdf
-    redact_xlsx=True,           # 可选：xlsx 输入额外产出 redacted.xlsx
     redaction_style="mosaic",   # mosaic | block（仅 PDF）
     audit=False,
     recoverable=True,           # audit.json 记录密文供 --recover 还原（需 recover extra）
     recover_key="passphrase",   # 缺省读 $PYSANITIZE_RECOVER_KEY，或自动生成；生效密钥写入 .recover.key
 )
-print(result.sanitized_md)     # Path
+print(result.sanitized_md)     # Path | None——结构化输入（xlsx/json）不产 markdown
 print(result.redacted_pdf)     # Path | None（PDF 输入且有可解析区域时）
-print(result.redacted_xlsx)    # Path | None（xlsx 输入且有可解析单元格时）
+print(result.redacted_xlsx)    # Path | None（xlsx 输入，始终产出）
+print(result.redacted_json)    # Path | None（json 输入，始终产出）
 print(result.detections)       # 每条含 field_type / start / end / masked_value
 ```
 
@@ -245,7 +249,7 @@ MinerU 只能**读** PDF —— 没有写入能力，重新渲染会丢字体/�
 
 ## 📊 Excel 打码（`redacted.xlsx`）
 
-加 `--redact-xlsx` 后，xlsx 输入会额外产出 `redacted.xlsx`。电子表格没有"遮盖"可言——敏感数据就在单元格里——所以打码是**源头改值**：
+xlsx 输入**始终**产出 `redacted.xlsx`（并**不再产 `sanitized.md`**——打码后的工作簿就是输出）。电子表格没有"遮盖"可言——敏感数据就在单元格里——所以打码是**源头改值**：
 
 - **解析同源**：xlsx 走 openpyxl 原生解析（不经 MinerU），每个单元格在文档文本里的位置都带 `(sheet, row, col)` 溯源，检测跑在什么字符串上、写回的就是什么字符串——**映射精确是构造保证的**，不做事后匹配（显示格式与存储值的分歧无从发生）
 - **隐藏表一并处理**：hidden / veryHidden 表同样解析与打码（藏数据的经典位置）
@@ -253,11 +257,20 @@ MinerU 只能**读** PDF —— 没有写入能力，重新渲染会丢字体/�
 - **公式**：显示缓存值含敏感信息的单元格，其公式被掩码值取代；其他单元格公式保留，`fullCalcOnLoad` 让 Excel 打开时重算
 - **全簿擦洗**：文档属性（创建者/标题等）、**回显已判定敏感值的**批注 / 表名 / 公式字面量、图表系列缓存（strCache/numCache，Excel 打开自动重建）一律清掉；被掩码单元格引用的公式在打开时重算
 - **字节级校验**：写回后对 zip 内全部文本成员（工作表 / 共享字符串 / 图表 / 批注 / docProps…）检索全部命中值（含 `&#NNNNN;` 字符引用形式），残留大声报进 `redaction_leftovers`，绝不静默
-- **恢复是精确的**：`--recoverable` 记录每个 span 的单元格坐标，`--recover` 逐格还原，整格数字/日期连**原始类型**一起还原（比 PDF 的尽力还原更强）
+- **恢复是精确的**：`--recoverable` 记录每个 span 的单元格坐标**以及掩码值在单元格内的精确位置**，`--recover` 按记录位置拼接还原——一个格里有两个同款占位符（两个姓名都掩成 `***`，或正文里本来就有一个字面 `***`）也绝不会串位还原；整格数字/日期连**原始类型**一起还原（比 PDF 的尽力还原更强）
 
 已知边界（P2）：批注本身不在检测面（只在回显已命中值时被擦洗——批注里独有的敏感值检测不到，演示见 `scripts/gen_demo_roster.py` 产出的样例）；xlsx 内嵌图片暂不处理（解析时警告）；透视表缓存若残留由字节级校验报告；openpyxl 往返对部分花哨特性有损（重序列化），属已知代价。
 
-- 默认关闭：加 `--redact-xlsx` 开启，或在 `config/pipeline.yaml` 设 `output.redact_xlsx: true` 常开；其余格式不受影响
+## 📦 JSON 打码（`redacted.json`）
+
+json 输入**始终**产出 `redacted.json`（不产 `sanitized.md`，绝不调用 MinerU）。与文档不同，JSON 没有版面要保——打码后的文件**就是**输出，所以它必须仍是合法、忠实的 JSON 文档：
+
+- **叶子级溯源**：原生生产器遍历解析树，每个字符串叶子占检测面的一行、携带自己的遍历路径（`$.员工[0].备注`）——检测跑在什么值上、写回的就是什么值，与 xlsx 同款的构造性精确保证
+- **结构不动**：键序、嵌套、未命中的叶子、甚至缩进都跟随源文件（2 空格保持 2 空格，压缩格式保持压缩）；键是 schema 不是数据——敏感值若出现在**键名**里由校验报告，绝不改写
+- **数字与布尔上检测面**：数字型手机号 `13812345678`、整值浮点 `5.0` 按渲染文本检测（是 `5` 不是 `5.0`）；被掩码的数字叶子变成字符串（JSON 没有掩码数字），还原时恢复原类型
+- **一个值里多个敏感串**：一条字符串里两个手机号（或正文里另有一个字面 `***`、旁边还有两个掩码名）是一个叶子上的多次替换——每个占位符在最终值里的精确位置是**算出来的不是搜出来的**，还原按位置拼接，绝无串位可能
+- **数据级校验**：输出重新加载并遍历——字符串叶子、渲染后的数字/布尔、键名——残留值连同 json 路径一起大声报告
+- **恢复是精确的**：`--recoverable` 记录每个 span 的叶子路径 + 类型标签，`--recover` 逐叶子还原并恢复类型（`13812345678` 回到数字）。唯一已知边界：被改写的值会丢失内嵌换行（按展平渲染），与改写的 xlsx 单元格一致——未触碰的多行值不受影响
 
 ## 🔁 可恢复脱敏（`--recoverable` / `--recover`）
 
@@ -281,7 +294,7 @@ uv run pysanitize output/样例/redacted.pdf --recover --recover-key s3cret   # 
 audit 里记录了什么（仅 recoverable 模式）：
 
 - **`recovery` 块** —— 算法、KDF 名称、scrypt 盐与参数、密文格式。盐是公开参数；**密钥材料绝不入 audit**（它只存在 `.recover.key` 里）。拿到口令（或密钥文件）即可还原，拿不到则无能为力。
-- **每个 span 额外字段**：`encrypted_value`（`ENC(v1:…)` 密文——`masked_value` 仍是正常占位符）、`start`/`end`（原文偏移）、`md`（占位符在 `sanitized.md` 中的区间）、`rects`（PDF 中被打码的矩形）、`cells`（xlsx 中被打码的单元格坐标与类型标签）。
+- **每个 span 额外字段**：`encrypted_value`（`ENC(v1:…)` 密文——`masked_value` 仍是正常占位符）、`start`/`end`（原文偏移）、`md`（占位符在 `sanitized.md` 中的区间）、`rects`（PDF 中被打码的矩形）、`cells`（xlsx 中被打码的单元格坐标与类型标签）、`json`（redacted.json 中被打码叶子的遍历路径与类型标签）。
 
 还原方式：
 
@@ -327,10 +340,10 @@ uv run pytest          # 单测全绿
 
 ```
 pysanitize/
-├── parser/     MinerU 封装（middle.json 投影 + v2 回退）+ ParsedDocument（逐行几何 / 图片配对 / offset 映射）
+├── parser/     MinerU 封装（middle.json 投影 + v2 回退）+ xlsx/json 原生生产器 + ParsedDocument（逐行几何 / 图片配对 / offset 映射）
 ├── detector/   rules / llm / registry（重叠消解）/ image（人脸 / YOLO 类别 / OCR 文字与按字段）
 ├── masker/     text（按 offset 掩码）/ image（马赛克）
-├── redact/     offset → 页面矩形（PDF）/ 单元格坐标（xlsx），打码 + 校验
+├── redact/     offset → 页面矩形（PDF）/ 单元格坐标（xlsx）/ 叶子路径（json），打码 + 校验
 ├── recover/    可逆令牌（AES-GCM + scrypt）与独立于流水线的还原
 ├── pipeline.py sanitize_document() 编排（唯一公共入口）
 ├── cli.py      argparse CLI
@@ -343,7 +356,7 @@ config/         本地覆盖（git 忽略，可选）：fields.yaml（字段规�
 
 ## 🗺️ Roadmap
 
-- **M2**：PDF 打码已落地（`redacted.pdf`）；Excel 原位打码已落地（`redacted.xlsx`，元数据/批注/图表缓存一并清理）；剩余：DOCX 原位编辑、xlsx 内嵌图片打码、批注独立检测、匿名输出名
+- **M2**：PDF 打码已落地（`redacted.pdf`）；Excel 原位打码已落地（`redacted.xlsx`，元数据/批注/图表缓存一并清理）；JSON 打码已落地（`redacted.json`，叶子级溯源 + 按位精确还原）；剩余：DOCX 原位编辑、xlsx 内嵌图片打码、批注独立检测、匿名输出名
 - **M3**：WebUI（上传 + 任务队列 + 进度）
 
 ---
