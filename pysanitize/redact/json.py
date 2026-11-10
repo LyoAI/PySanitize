@@ -136,15 +136,19 @@ def redact_json(
     spaces when the source is single-line/minified → compact output).
     """
     src = Path(doc_path)
-    raw = src.read_text(encoding="utf-8-sig")
-    data = json.loads(raw)
+    # Stream both ways: a 99 MB export would otherwise be alive three times
+    # over at once (source text + parsed tree + serialized copy + its utf-8
+    # bytes on write). ``json.load``/``json.dump`` read and write in chunks,
+    # and the indent sniff needs only the file's head and last byte.
+    indent, newline = _source_style(src)
+    with src.open(encoding="utf-8-sig") as fh:
+        data = json.load(fh)
     for edit in edits:
         text = apply_repls(edit.text, edit.repls)
         _set_leaf(data, edit.path, text)
-    indent, newline = _source_style(raw)
-    Path(out_path).write_text(
-        json.dumps(data, ensure_ascii=False, indent=indent) + newline, encoding="utf-8"
-    )
+    with Path(out_path).open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=indent)
+        fh.write(newline)
     logger.info(
         "redacted %d value(s) -> %s", len(edits), out_path
     )
@@ -201,14 +205,20 @@ def _set_leaf(data, path: tuple, value) -> None:
     node[path[-1]] = value
 
 
-def _source_style(raw: str) -> tuple[str | None, str]:
-    """``(indent, trailing_newline)`` sniffed from the source text.
+def _source_style(src: Path) -> tuple[str | None, str]:
+    """``(indent, trailing_newline)`` sniffed from the source *file*.
 
     The output should look like the input: a two-space-indented file stays
-    two-space-indented, a minified one stays minified (``indent=None``).
+    two-space-indented, a minified one stays minified (``indent=None``). Only
+    the head (the first two lines' worth) and the last byte are read — the
+    style of a 99 MB export must not cost a 99 MB string.
     """
-    newline = "\n" if raw.endswith("\n") else ""
-    second = raw.split("\n", 1)[1] if "\n" in raw else ""
+    with src.open("rb") as fh:
+        head = fh.read(4096)
+        fh.seek(max(0, src.stat().st_size - 1))
+        newline = "\n" if fh.read(1) == b"\n" else ""
+    text = head.decode("utf-8-sig", errors="replace")  # head may cut a glyph; only line 2 matters
+    second = text.split("\n", 1)[1] if "\n" in text else ""
     indent = None
     if second[:1] in (" ", "\t"):
         indent = second[: len(second) - len(second.lstrip(" \t"))]

@@ -15,12 +15,19 @@ input keeps its relative layout, so same-named files in different folders
 never collide (``upload/a/report.xlsx`` → ``output/a/report/``).
 
 Per-file failures are isolated: one broken document never aborts the batch.
-Everything already run (its job dir has ``audit.json``) is skipped — redo
-with ``--force``. A ``batch_summary.json`` lands in the output root with
-per-file status and field hit counts (masked values only, no raw PII).
+The batch is **resumable**: a file whose job dir holds a complete result
+(``audit.json`` plus every artifact the audit names) is skipped, so an
+interrupted run — Ctrl-C, a crash, a reboot — is continued simply by rerunning
+the same command; the file that was in flight when it stopped is redone (it
+never got its audit). ``--resume`` states that behaviour explicitly (it is the
+default); ``--force`` redoes everything instead. The summary is rewritten
+after every file, so even an interrupted run leaves a usable
+``batch_summary.json`` (``"status": "interrupted"``) with per-file status and
+field hit counts (masked values only, no raw PII).
 
 Usage:
     uv run python scripts/batch_sanitize.py upload_materials -o output
+    uv run python scripts/batch_sanitize.py upload_materials -o output --resume
     uv run python scripts/batch_sanitize.py upload_materials --detector hybrid --recoverable
     uv run python scripts/batch_sanitize.py upload_materials --force --audit
 """
@@ -28,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 import time
@@ -44,7 +52,7 @@ STRUCTURED_SUFFIXES = {".xlsx", ".json"}  # in-place redaction, no MinerU / no m
 SUPPORTED_SUFFIXES = set(_MINERU_SUFFIXES) | STRUCTURED_SUFFIXES
 
 SUMMARY_NAME = "batch_summary.json"
-_DONE_MARKER = "audit.json"  # a job dir with this file is considered done
+_DONE_MARKER = "audit.json"  # + the artifacts it names — see is_done()
 
 
 # ---------------------------------------------------------------- collection
@@ -80,6 +88,41 @@ def job_dir_for(src: Path, in_root: Path, out_root: Path, claimed: dict[Path, Pa
 
 
 # ------------------------------------------------------------------- the run
+
+
+def is_done(src: Path, job_dir: Path) -> bool:
+    """Is this job dir's result complete enough to skip on a resumed run?
+
+    ``audit.json`` alone is not enough: it is written last in the pipeline,
+    but an artifact it names can still be missing — deleted by hand, eaten by
+    a half-full disk, truncated by a crash mid-write, or an audit from a
+    killed run that never finished. Such a file is *redone*, not skipped;
+    skipping it would leave the operator with an audit for an artifact that
+    does not exist.
+    """
+    audit = job_dir / _DONE_MARKER
+    if not audit.is_file():
+        return False
+    try:
+        redaction = json.loads(audit.read_text(encoding="utf-8")).get("redaction") or {}
+    except (OSError, json.JSONDecodeError):
+        return False  # unreadable/truncated audit — redo the file
+    named = (redaction.get("pdf"), redaction.get("xlsx"), redaction.get("json"))
+    if any(name and not (job_dir / name).is_file() for name in named):
+        return False
+    # Document sources always ship sanitized.md beside the audit.
+    if src.suffix.lower() not in STRUCTURED_SUFFIXES and not (job_dir / "sanitized.md").is_file():
+        return False
+    return True
+
+
+def write_summary(out_root: Path, summary: dict) -> Path:
+    """(Re)write ``batch_summary.json`` — called after every file, so an
+    interrupted run still leaves the operator a usable record."""
+    out_root.mkdir(parents=True, exist_ok=True)
+    path = out_root / SUMMARY_NAME
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def run_one(src: Path, job_dir: Path, args: argparse.Namespace) -> SanitizeResult:
@@ -146,8 +189,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--recoverable", action="store_true",
                         help="record ciphertext for later --recover (needs the recover extra)")
     parser.add_argument("--recover-key", help="passphrase for --recoverable (else generated → .recover.key)")
-    parser.add_argument("--force", action="store_true",
-                        help="re-run files whose job dir already has audit.json")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--resume", action="store_true",
+                      help="continue an interrupted batch: skip files whose result "
+                           "is already complete (this is the DEFAULT — pass the flag "
+                           "to state it explicitly; rerun the same command after "
+                           "Ctrl-C and it resumes)")
+    mode.add_argument("--force", action="store_true",
+                      help="redo every file, including ones already sanitized")
     return parser.parse_args(argv)
 
 
@@ -175,62 +224,111 @@ def main(argv: list[str] | None = None) -> int:
     claimed: dict[Path, Path] = {}
     ok = skipped = failed = 0
     started = time.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    for i, src in enumerate(files, 1):
-        job_dir = job_dir_for(src, in_root, out_root, claimed)
-        kind = "in-place" if src.suffix.lower() in STRUCTURED_SUFFIXES else "mineru"
-        label = f"[{i}/{len(files)}] {src.relative_to(in_root)}"
-        if not args.force and (job_dir / _DONE_MARKER).is_file():
-            skipped += 1
-            records.append({"source": str(src.relative_to(in_root)), "job_dir": str(job_dir),
-                            "status": "skipped (already sanitized)"})
-            print(f"{label:<58} skipped (output exists; --force to redo)")
-            continue
-        t0 = time.monotonic()
-        # say we started, with the size — a big file otherwise sits silent for
-        # minutes and looks hung; flush so piped/tee'd output shows it too
-        print(
-            f"{label:<58} processing [{kind}] ({src.stat().st_size / 1_048_576:.1f} MB)",
-            flush=True,
-        )
-        try:
-            result = run_one(src, job_dir, args)
-        except Exception as exc:  # isolate: one bad file never kills the batch
-            failed += 1
-            records.append({"source": str(src.relative_to(in_root)), "job_dir": str(job_dir),
-                            "status": "failed", "error": str(exc)[:300]})
-            print(f"{label:<58} FAILED [{kind}] {exc}")
-            continue
-        duration = time.monotonic() - t0
-        ok += 1
-        records.append({
-            "source": str(src.relative_to(in_root)),
-            "job_dir": str(job_dir),
-            "status": "sanitized",
-            "route": kind,
-            "artifacts": artifact_of(result),
-            "detections": len(result.detections),
-            "fields": field_counts(result),
-            "duration_s": round(duration, 2),
-        })
-        print(f"{label:<58} {len(result.detections):>4} hits  {artifact_of(result):<32} {duration:5.1f}s")
+    def summary(status: str) -> dict:
+        """The record written after every file — `status` is running /
+        interrupted / complete, so an aborted run is self-describing."""
+        return {
+            "input": str(in_root),
+            "output_root": str(out_root),
+            "status": status,
+            "detector": args.detector,
+            "fields": args.fields,
+            "started": started_at,
+            "duration_s": round(time.monotonic() - started, 1),
+            "totals": {"sanitized": ok, "skipped": skipped, "failed": failed,
+                       "unsupported": len(unsupported)},
+            "files": records,
+            "unsupported": [str(p.relative_to(in_root)) for p in unsupported],
+        }
+
+    # Resume: say up front how much of the batch is already done, so a rerun
+    # after an interruption starts with an honest picture instead of a silent
+    # stream of "skipped" lines.
+    if not args.force:
+        probe: dict[Path, Path] = {}
+        done = sum(is_done(s, job_dir_for(s, in_root, out_root, probe)) for s in files)
+        if done:
+            print(f"  resuming: {done} already sanitized, {len(files) - done} to do "
+                  f"(--force redoes everything)")
+
+    in_flight: dict | None = None
+    try:
+        for i, src in enumerate(files, 1):
+            job_dir = job_dir_for(src, in_root, out_root, claimed)
+            kind = "in-place" if src.suffix.lower() in STRUCTURED_SUFFIXES else "mineru"
+            label = f"[{i}/{len(files)}] {src.relative_to(in_root)}"
+            if not args.force and is_done(src, job_dir):
+                skipped += 1
+                records.append({"source": str(src.relative_to(in_root)), "job_dir": str(job_dir),
+                                "status": "skipped (already sanitized)"})
+                print(f"{label:<58} skipped (already sanitized; --force to redo)")
+                write_summary(out_root, summary("running"))
+                continue
+            t0 = time.monotonic()
+            # say we started, with the size — a big file otherwise sits silent
+            # for minutes and looks hung; flush so piped/tee'd output shows it
+            print(
+                f"{label:<58} processing [{kind}] ({src.stat().st_size / 1_048_576:.1f} MB)",
+                flush=True,
+            )
+            in_flight = {
+                "source": str(src.relative_to(in_root)),
+                "job_dir": str(job_dir),
+                "route": kind,
+                "status": "interrupted",
+            }
+            try:
+                result = run_one(src, job_dir, args)
+            except Exception as exc:  # isolate: one bad file never kills the batch
+                failed += 1
+                in_flight = None
+                records.append({"source": str(src.relative_to(in_root)), "job_dir": str(job_dir),
+                                "status": "failed", "error": str(exc)[:300]})
+                print(f"{label:<58} FAILED [{kind}] {exc}")
+                write_summary(out_root, summary("running"))
+                gc.collect()  # drop whatever the failed run left behind
+                continue
+            in_flight = None
+            duration = time.monotonic() - t0
+            ok += 1
+            records.append({
+                "source": str(src.relative_to(in_root)),
+                "job_dir": str(job_dir),
+                "status": "sanitized",
+                "route": kind,
+                "artifacts": artifact_of(result),
+                "detections": len(result.detections),
+                "fields": field_counts(result),
+                "duration_s": round(duration, 2),
+            })
+            print(f"{label:<58} {len(result.detections):>4} hits  "
+                  f"{artifact_of(result):<32} {duration:5.1f}s")
+            write_summary(out_root, summary("running"))
+            # A large run's result (every detection) is dead once summarized;
+            # releasing it here keeps one file's peak from stacking on the next
+            # file's. Python's allocator still retains arenas, so RSS settles
+            # at the batch's largest file rather than growing monotonically.
+            result = None
+            gc.collect()
+    except KeyboardInterrupt:
+        # Ctrl-C mid-batch: keep what is already written and say exactly how
+        # to continue. The in-flight file is the one to redo (it never got an
+        # audit), so it is recorded as interrupted and retried on the next run.
+        if in_flight is not None:
+            records.append(in_flight)
+        remaining = len(files) - ok - skipped - failed - (1 if in_flight else 0)
+        summary_path = write_summary(out_root, summary("interrupted"))
+        print(f"\ninterrupted — {ok} sanitized, {skipped} already done, "
+              f"{failed} failed, {remaining} not started"
+              + (" (the file in flight will be redone)" if in_flight else ""))
+        print("resume by rerunning the same command: completed files are skipped")
+        print(f"summary: {summary_path}")
+        return 130
 
     elapsed = time.monotonic() - started
-    summary = {
-        "input": str(in_root),
-        "output_root": str(out_root),
-        "detector": args.detector,
-        "fields": args.fields,
-        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "duration_s": round(elapsed, 1),
-        "totals": {"sanitized": ok, "skipped": skipped, "failed": failed,
-                   "unsupported": len(unsupported)},
-        "files": records,
-        "unsupported": [str(p.relative_to(in_root)) for p in unsupported],
-    }
-    out_root.mkdir(parents=True, exist_ok=True)
-    summary_path = out_root / SUMMARY_NAME
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_path = write_summary(out_root, summary("complete"))
 
     print(f"\n{ok} sanitized, {skipped} skipped, {failed} failed, "
           f"{len(unsupported)} unsupported  —  {elapsed:.1f}s total")

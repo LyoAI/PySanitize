@@ -418,6 +418,16 @@ def sanitize_document(
                 len(detections),
             )
 
+    # Provenance tables are the largest per-document structures there is
+    # (a checklist json holds one JsonBox per leaf, 360k of them; a workbook
+    # one CellBox per cell). Their only job — mapping char offsets onto
+    # leaves/cells/rects — is done now that the artifacts are written.
+    # Release them before the audit is built and serialized, or the audit's
+    # per-span dicts stack on top of them for no reason.
+    for _b in doc.blocks:
+        _b.json_boxes = None
+        _b.cells = None
+
     cell_by_span: dict[tuple[int, int], list[dict]] = {}
     for e in edits:
         for _, _, _, s, en, ms, me in e.repls:

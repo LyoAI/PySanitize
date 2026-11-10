@@ -106,7 +106,11 @@ def write_audit(info: AuditInfo, out_dir: Path) -> Path:
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "audit.json"
-    path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Stream the serialization: a 360k-span audit is ~150 MB of text, and
+    # building it as one string (then its utf-8 copy on write) doubled the
+    # document's peak memory for no benefit.
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(audit, fh, ensure_ascii=False, indent=2)
     return path
 
 
@@ -131,7 +135,6 @@ def write_sensitive_report(info: AuditInfo, out_dir: Path) -> Path:
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "sensitive_report.json"
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    with path.open("w", encoding="utf-8") as fh:  # streamed, see write_audit
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
     return path
