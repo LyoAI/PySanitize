@@ -185,6 +185,46 @@ def test_verify_exact_when_values_share_prefix_grams(tmp_path: Path):
 # -- end to end: the real pipeline (native parse, rules detector, no MinerU) --
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        # export-style: one record per element — was a hard TypeError
+        [{"姓名": "张三", "手机号": "13812345678"}, {"姓名": "李四", "手机号": "13998886666"}],
+        # bare rows — a shorter element raised "tuple index out of range"
+        ["13812345678", "张三"],
+        # nested rows — no error, but each inner row used to be REPLACED by the
+        # masked string (silent corruption); this case pins the real content
+        [["张三", "13812345678"], ["李四", "13998886666"]],
+        # holes and non-record elements must not shift any path
+        [None, {}, {"手机号": 13812345678}, ["13912345678"], [1, 2]],
+    ],
+)
+def test_top_level_array_round_trip(data, tmp_path: Path):
+    """Every leaf path under a top-level array starts at the element index, so
+    redact and recover address the same node they detected — verified by
+    deep equality against the source, not by "it did not raise"."""
+    path = tmp_path / "export.json"
+    path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
+    anchor = "13812345678" if "13812345678" in json.dumps(data) else "13912345678"
+
+    result = sanitize_document(
+        path, detector="rules", fields=FIELDS,
+        recoverable=True, recover_key="pw", out_dir=tmp_path / "out",
+    )
+    audit = json.loads(result.audit_path.read_text(encoding="utf-8"))
+    assert audit["masked_spans"], "fixture must yield at least one detection"
+    assert all(isinstance(s["json"]["path"][0], int) for s in audit["masked_spans"])
+
+    redacted = json.loads(result.redacted_json.read_text(encoding="utf-8"))
+    assert isinstance(redacted, list)  # still an array, not a string or object
+    assert anchor not in json.dumps(redacted, ensure_ascii=False)
+    assert len(redacted) == len(data)  # no element lost, none added
+
+    rec = recover_file(result.redacted_json, passphrase="pw")
+    assert rec.unresolved == 0
+    assert json.loads(rec.output.read_text(encoding="utf-8")) == data
+
+
 def test_sanitize_document_json_end_to_end(json_file: Path, tmp_path: Path):
     result = sanitize_document(
         json_file, detector="rules", fields=FIELDS, out_dir=tmp_path / "out"

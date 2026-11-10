@@ -14,8 +14,9 @@ data, and masking a key would rename fields. A key echoing a detected value
 is reported by the data-level verification instead (see
 ``pysanitize.redact.json.verify_redaction_json``). A top-level array becomes
 one block per element — the block's ``page`` is the element's 1-based
-position, so audit "pages" address array elements; any other document is a
-single block. Rendering mirrors the xlsx producer: integral floats render as
+position, so audit "pages" address array elements, and every leaf path
+starts at the element's 0-based index (paths are walked from the root by
+the redactor and recovery); any other document is a single block. Rendering mirrors the xlsx producer: integral floats render as
 ints, strings flatten newlines (a rewritten value loses them, as a rewritten
 xlsx cell does), bools render ``true``/``false``.
 """
@@ -36,10 +37,15 @@ def parse_json_blocks(path: Path) -> list[Block]:
     stage (detect, redact, recover).
     """
     data = json.loads(path.read_text(encoding="utf-8-sig"))
-    units = data if isinstance(data, list) else [data]
+    top_list = isinstance(data, list)
+    units = data if top_list else [data]
     blocks: list[Block] = []
     for i, unit in enumerate(units):  # page = i + 1: skipped empties never shift it
-        boxes = _leaf_boxes(unit)
+        # Under a top-level array every path must start at the element's own
+        # index — the redactor walks these paths from the ROOT (a list), so a
+        # path without the index walks the wrong node (str keys index a list)
+        # or, for nested arrays, silently lands in some other element.
+        boxes = _leaf_boxes(unit, (i,) if top_list else ())
         if not boxes:
             continue
         text = "\n".join(b.text for b in boxes)

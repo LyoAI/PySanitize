@@ -87,6 +87,22 @@ def test_top_level_array_pages_survive_empty_elements(tmp_path: Path):
     assert [b.page for b in blocks] == [1, 3]
 
 
+def test_top_level_array_paths_start_at_the_element_index(tmp_path: Path):
+    """Paths are walked from the ROOT by redact and recover, so under a
+    top-level array every one must begin with the element's 0-based index —
+    a bare ``("手机号",)`` indexes the root list with a string and raised
+    "list indices must be integers or slices, not str" on every such file.
+    Empties never shift numbering, so index 1 is missing but index 2 is not.
+    """
+    data = [{"手机号": "13812345678"}, {}, ["13812345678", "张三"]]
+    path = tmp_path / "arr.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    boxes = {(blk.page, b.path): b for blk in parse_json_blocks(path) for b in blk.json_boxes}
+    assert set(boxes) == {(1, (0, "手机号")), (3, (2, 0)), (3, (2, 1))}
+    assert boxes[(3, (2, 0))].text == "13812345678"
+    assert boxes[(1, (0, "手机号"))].text == "13812345678"
+
+
 def test_top_level_object_is_single_block(json_file: Path):
     blocks = parse_json_blocks(json_file)
     assert len(blocks) == 1 and blocks[0].page == 1
