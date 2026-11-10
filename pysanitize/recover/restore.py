@@ -26,6 +26,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from pysanitize.utils.splice import apply_repls  # pure string helper, no pipeline
 from pysanitize.recover.crypto import (
     KEYFILE_NAME,
     TokenCipher,
@@ -108,17 +109,26 @@ def _recover_markdown(md_path: Path, cipher: TokenCipher, audit: dict, out_path)
     text = md_path.read_text(encoding="utf-8")
     spans = [s for s in audit_spans(audit) if "md" in s]
     restored = 0
-    # Splice from the back so ranges recorded earlier stay valid.
-    for span in sorted(spans, key=lambda s: -s["md"][0]):
+    # One ascending pass, joined at the end — splicing the whole document per
+    # span was quadratic in (spans × document length), minutes on a large pdf.
+    parts: list[str] = []
+    prev = 0
+    for span in sorted(spans, key=lambda s: s["md"][0]):
+        start, end = span["md"]
+        if start < prev:
+            continue  # overlapping/corrupt range — never re-splice text twice
         try:
             value = cipher.decrypt_token(span["encrypted_value"])
         except Exception:  # wrong key / tampered ciphertext
             continue
-        start, end = span["md"]
         if text[start:end] != span.get("masked_value"):
             continue  # placeholder gone — the file was edited after sanitizing
-        text = text[:start] + value + text[end:]
+        parts.append(text[prev:start])
+        parts.append(value)
+        prev = end
         restored += 1
+    parts.append(text[prev:])
+    text = "".join(parts)
     target = _target_for(md_path, out_path)
     target.write_text(text, encoding="utf-8")
     return RecoverResult(target, restored, len(audit_spans(audit)) - restored, "markdown")
@@ -211,8 +221,7 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
         if any(not 0 <= ms <= me <= len(text) or text[ms:me] != masked
                for ms, me, _, masked, _ in items):
             continue  # placeholder moved — the file was edited after sanitizing
-        for ms, me, value, _, _ in sorted(items, key=lambda t: -t[0]):
-            text = text[:ms] + value + text[me:]
+        text = apply_repls(text, items)
         ws.cell(row=row, column=col).value = text
         ok_spans.update(i for _, _, _, _, i in items)
 
@@ -320,9 +329,7 @@ def _recover_json(json_path: Path, cipher: TokenCipher, audit: dict, out_path) -
         if any(not 0 <= ms <= me <= len(node) or node[ms:me] != masked
                for ms, me, _, masked, _ in items):
             continue  # placeholder moved — the file was edited after sanitizing
-        text = node
-        for ms, me, value, _, _ in sorted(items, key=lambda t: -t[0]):
-            text = text[:ms] + value + text[me:]
+        text = apply_repls(node, items)
         # Whole-leaf number/bool masks come back with their JSON type.
         if len(items) == 1:
             kind = placed[items[0][4]]["json"].get("kind", "str")

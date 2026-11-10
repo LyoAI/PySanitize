@@ -33,7 +33,7 @@ from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec
 from pysanitize.parser.json import format_path, render_scalar
 from pysanitize.redact._grams import ValueMatcher
-from pysanitize.utils import get_logger
+from pysanitize.utils import apply_repls, get_logger
 
 logger = get_logger()
 
@@ -139,9 +139,7 @@ def redact_json(
     raw = src.read_text(encoding="utf-8-sig")
     data = json.loads(raw)
     for edit in edits:
-        text = edit.text
-        for rel_start, rel_end, masked, *_ in sorted(edit.repls, key=lambda r: -r[0]):
-            text = text[:rel_start] + masked + text[rel_end:]
+        text = apply_repls(edit.text, edit.repls)
         _set_leaf(data, edit.path, text)
     indent, newline = _source_style(raw)
     Path(out_path).write_text(

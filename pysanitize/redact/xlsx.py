@@ -39,7 +39,7 @@ from pathlib import Path
 from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec
 from pysanitize.redact._grams import ValueMatcher
-from pysanitize.utils import get_logger
+from pysanitize.utils import apply_repls, get_logger
 
 logger = get_logger()
 
@@ -176,9 +176,7 @@ def redact_xlsx(
 
     wb = load_workbook(Path(doc_path), data_only=False)
     for edit in edits:
-        text = edit.text
-        for rel_start, rel_end, masked, _, _, _, _ in sorted(edit.repls, key=lambda r: -r[0]):
-            text = text[:rel_start] + masked + text[rel_end:]
+        text = apply_repls(edit.text, edit.repls)
         ws = wb.worksheets[edit.sheet_idx] if 0 <= edit.sheet_idx < len(wb.worksheets) else wb[edit.sheet]
         ws.cell(row=edit.row, column=edit.col).value = text
 
