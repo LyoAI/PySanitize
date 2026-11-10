@@ -30,18 +30,26 @@ scrubbing above missed (e.g. pivot caches, P2).
 
 from __future__ import annotations
 
+import re
 import zipfile
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec
+from pysanitize.redact._grams import gram_candidates, gram_index
 from pysanitize.utils import get_logger
 
 logger = get_logger()
 
 # Zip members scanned by verify (everything textual in an xlsx is xml-ish).
 _TEXT_SUFFIXES = frozenset({".xml", ".rels", ".vml"})
+
+# Values made purely of word characters (letters, digits, _, CJK) can only
+# occur inside one maximal \w+ run of a blob — the token-level fast path in
+# verify is exact for them. Anything else may straddle token boundaries.
+_WORDY_RE = re.compile(r"\w+")
 
 
 @dataclass
@@ -83,13 +91,25 @@ def resolve_cells(
     simply produce no edit.
     """
     edits: dict[tuple[str, int, int], CellEdit] = {}
+    cell_bounds: dict[int, tuple[list[int], list[int]]] = {}  # id(block) -> (starts, ends)
     for d in detections:
         for block in doc.span(d.start, d.end):
             if not block.cells:
                 continue
             lo = max(d.start, block.char_start) - block.char_start
             hi = min(d.end, block.char_end) - block.char_start
-            for cell in block.cells:
+            bounds = cell_bounds.get(id(block))
+            if bounds is None:
+                cells = block.cells
+                bounds = ([cell.start for cell in cells], [cell.end for cell in cells])
+                cell_bounds[id(block)] = bounds
+            starts, ends = bounds
+            # candidate range between "first cell ending past lo" and "first
+            # cell starting past hi" — a sheet parses to ONE giant block, so
+            # this must stay O(log n + hits): a slice here copied tens of
+            # thousands of cells per detection and made large sheets quadratic
+            for j in range(bisect_right(ends, lo), bisect_right(starts, hi)):
+                cell = block.cells[j]
                 clo, chi = max(lo, cell.start), min(hi, cell.end)
                 if chi <= clo:
                     continue
@@ -191,19 +211,41 @@ def verify_redaction_xlsx(out_path: str | Path, values: list[str]) -> list[tuple
     character references (``&#24352;``), which a raw grep would silently miss.
     Returns ``(value, zip member)`` pairs deduped by value; the caller logs
     them loudly but never fails the run on them.
+
+    Word-only values are matched per ``\\w+`` token with the shared n-gram
+    prefilter: such a value can only ever sit inside one maximal word run, so
+    token-level substring checks are exact — and scanning every value against
+    every member blob is quadratic (63k values × megabyte blobs ≈ minutes).
+    Values containing non-word characters fall back to the direct blob grep
+    (they could straddle token boundaries).
     """
     import html
+    import re
 
     wanted = {v for v in values if v and not any(c.isspace() for c in v)}
     if not wanted:
         return []
+    wordy = {v for v in wanted if _WORDY_RE.fullmatch(v)}
+    direct = wanted - wordy
+    grams2, grams4, short = gram_index(sorted(wordy))
     found: dict[str, str] = {}
     with zipfile.ZipFile(out_path) as zf:
         for name in zf.namelist():
             if Path(name).suffix.lower() not in _TEXT_SUFFIXES:
                 continue
             blob = html.unescape(zf.read(name).decode("utf-8", errors="ignore"))
-            for v in wanted:
+            for v in direct:
+                if v not in found and v in blob:
+                    found[v] = name
+            if not wordy:
+                continue
+            for tok in re.findall(r"\w+", blob):
+                for v in gram_candidates(tok, grams2, grams4):
+                    if v not in found and v in tok:
+                        found[v] = name
+                        if len(found) == len(wanted):
+                            return sorted(found.items())
+            for v in short:
                 if v not in found and v in blob:
                     found[v] = name
     return sorted(found.items())
@@ -220,26 +262,41 @@ def _scrub_comments_and_formulas(wb, values: list[str], placeholder: str) -> tup
     ``placeholder`` — over-redaction of a redacted copy, never a leak. Plain
     string cells are NOT scrubbed this way: they sit on the detection surface,
     so misses there are the detector's (and verify's) to report.
+
+    Candidate values per text come from the shared n-gram prefilter — a
+    formula-heavy workbook would otherwise multiply every formula by every
+    value. Candidates are replaced longest-first: disjoint values make the
+    order irrelevant, and nesting (张三 inside 张三丰, both detected) masks
+    the longer one — deterministic, unlike iterating detection order.
     """
     comments = formulas = 0
     if not values:
         return 0, 0
+    grams2, grams4, short = gram_index(sorted(set(values)))
+
+    def _clean(text: str) -> str:
+        clean = text
+        for v in short:
+            if v in clean:
+                clean = clean.replace(v, placeholder)
+        cands = sorted(gram_candidates(text, grams2, grams4), key=lambda v: (-len(v), v))
+        for v in cands:
+            if v in clean:
+                clean = clean.replace(v, placeholder)
+        return clean
+
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for cell in row:
                 if cell.comment is not None:
                     text = cell.comment.text
-                    clean = text
-                    for v in values:
-                        clean = clean.replace(v, placeholder)
+                    clean = _clean(text)
                     if clean != text:
                         cell.comment.text = clean
                         comments += 1
                 value = cell.value
                 if isinstance(value, str) and value.startswith("="):
-                    clean = value
-                    for v in values:
-                        clean = clean.replace(v, placeholder)
+                    clean = _clean(value)
                     if clean != value:
                         cell.value = clean
                         formulas += 1

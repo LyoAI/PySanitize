@@ -46,11 +46,11 @@ class ParsedDocument:
             (b for b in self.blocks if 0 <= b.char_start < b.char_end),
             key=lambda b: b.char_start,
         )
+        self._starts = [b.char_start for b in self._by_start]  # bisect index
 
     def block_at(self, offset: int) -> Block | None:
         """The block containing ``offset`` (or None if in a gap / meta block)."""
-        starts = [b.char_start for b in self._by_start]
-        i = bisect_right(starts, offset) - 1
+        i = bisect_right(self._starts, offset) - 1
         if i < 0:
             return None
         block = self._by_start[i]
@@ -58,7 +58,7 @@ class ParsedDocument:
 
     def span(self, start: int, end: int) -> list[Block]:
         """All blocks overlapping ``[start, end)``, in reading order."""
-        starts = [b.char_start for b in self._by_start]
+        starts = self._starts
         i = bisect_right(starts, start) - 1
         out: list[Block] = []
         for b in self._by_start[max(i, 0):]:

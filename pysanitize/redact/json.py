@@ -27,9 +27,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bisect import bisect_right
+
 from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec
 from pysanitize.parser.json import format_path, render_scalar
+from pysanitize.redact._grams import gram_candidates, gram_index
 from pysanitize.utils import get_logger
 
 logger = get_logger()
@@ -61,15 +64,30 @@ def resolve_json_values(
 
     Per-piece semantics identical to :func:`pysanitize.redact.xlsx.resolve_cells`:
     a detection crossing leaves contributes each leaf its intersected piece.
+
+    Boxes within a block are ascending and non-overlapping, so candidates are
+    found by bisecting on box ends — a top-level-object JSON parses to ONE
+    block holding every leaf, and scanning it linearly per detection made
+    large documents quadratic (30k detections × 100k boxes).
     """
     edits: dict[tuple, JsonEdit] = {}
+    box_bounds: dict[int, tuple[list[int], list[int]]] = {}  # id(block) -> (starts, ends)
     for d in detections:
         for block in doc.span(d.start, d.end):
             if not block.json_boxes:
                 continue
             lo = max(d.start, block.char_start) - block.char_start
             hi = min(d.end, block.char_end) - block.char_start
-            for box in block.json_boxes:
+            bounds = box_bounds.get(id(block))
+            if bounds is None:
+                boxes = block.json_boxes
+                bounds = ([box.start for box in boxes], [box.end for box in boxes])
+                box_bounds[id(block)] = bounds
+            starts, ends = bounds
+            # candidates sit between "first box ending past lo" and "first box
+            # starting past hi" — a range, never a slice copy of a giant block
+            for j in range(bisect_right(ends, lo), bisect_right(starts, hi)):
+                box = block.json_boxes[j]
                 clo, chi = max(lo, box.start), min(hi, box.end)
                 if chi <= clo:
                     continue
@@ -144,15 +162,24 @@ def verify_redaction_json(out_path: str | Path, values: list[str]) -> list[tuple
     reported for the operator to judge, never silently kept. Returns
     ``(value, json-path of first occurrence)`` pairs deduped by value; the
     caller logs them loudly but never fails the run on them.
+
+    Candidate values per leaf come from the shared n-gram prefilter
+    (:mod:`pysanitize.redact._grams`) — checking every value against every
+    leaf is quadratic and dominated large documents (36k values × 72k
+    leaves ≈ minutes).
     """
     wanted = {v for v in values if v}
     if not wanted:
         return []
+    grams2, grams4, short = gram_index(sorted(wanted))
     data = json.loads(Path(out_path).read_text(encoding="utf-8-sig"))
     found: dict[str, str] = {}
 
     def check(text: str, where: str) -> None:
-        for v in wanted:
+        for v in short:
+            if v not in found and v in text:
+                found[v] = where
+        for v in gram_candidates(text, grams2, grams4):
             if v not in found and v in text:
                 found[v] = where
 
