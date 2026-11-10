@@ -10,6 +10,7 @@ validation.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 
 from pysanitize.parser.document import ParsedDocument
 
@@ -337,11 +338,23 @@ class RuleDetector(TextDetector):
         # are skipped.
         cands.sort(key=lambda c: (c[0], -(c[1] - c[0]), c[1]))
         out: list[Detection] = []
-        covered: list[tuple[int, int]] = []
+        # Accepted spans form a staircase: candidates arrive by ascending
+        # start (longest first at ties), and a candidate is accepted only
+        # when NOT contained in an accepted span — so among accepted spans,
+        # starts and ends both strictly increase. Containment is therefore
+        # decided by the closest accepted start alone: the floor span has
+        # the largest end of everything that could contain the candidate.
+        # A company-heavy document generates tens of thousands of candidates
+        # and spans; scanning `covered` per candidate was quadratic there
+        # (the batch hang on 案例 workbook dumps).
+        covered_s: list[int] = []
+        covered_e: list[int] = []
         for start, end, name in cands:
-            if any(s <= start and end <= e for s, e in covered):
+            i = bisect_right(covered_s, start) - 1
+            if i >= 0 and end <= covered_e[i]:
                 continue
-            covered.append((start, end))
+            covered_s.append(start)
+            covered_e.append(end)
             out.append(self._make(doc, spec.name, name, start, end, 0.9))
         return out
 
