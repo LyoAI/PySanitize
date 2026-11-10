@@ -187,6 +187,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{label:<58} skipped (output exists; --force to redo)")
             continue
         t0 = time.monotonic()
+        # say we started, with the size — a big file otherwise sits silent for
+        # minutes and looks hung; flush so piped/tee'd output shows it too
+        print(
+            f"{label:<58} processing [{kind}] ({src.stat().st_size / 1_048_576:.1f} MB)",
+            flush=True,
+        )
         try:
             result = run_one(src, job_dir, args)
         except Exception as exc:  # isolate: one bad file never kills the batch
@@ -205,13 +211,9 @@ def main(argv: list[str] | None = None) -> int:
             "artifacts": artifact_of(result),
             "detections": len(result.detections),
             "fields": field_counts(result),
-            "leftovers": len(result.redaction_leftovers),
             "duration_s": round(duration, 2),
         })
         print(f"{label:<58} {len(result.detections):>4} hits  {artifact_of(result):<32} {duration:5.1f}s")
-        if result.redaction_leftovers:
-            for value, where in result.redaction_leftovers[:5]:
-                print(f"    ⚠ leftover: {where}")
 
     elapsed = time.monotonic() - started
     summary = {

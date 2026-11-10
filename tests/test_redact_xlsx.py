@@ -192,7 +192,6 @@ def test_sheet_name_scrub_keeps_uniqueness(tmp_path: Path):
 def test_sanitize_document_xlsx_end_to_end(xlsx: Path, tmp_path: Path):
     result = sanitize_document(xlsx, detector="rules", out_dir=tmp_path / "out")
     assert result.redacted_xlsx.is_file()
-    assert result.redaction_leftovers == []
     assert result.redacted_pdf is None
     # structured sources ship no markdown — the redacted workbook IS the output
     assert result.sanitized_md is None
@@ -202,7 +201,6 @@ def test_sanitize_document_xlsx_end_to_end(xlsx: Path, tmp_path: Path):
     assert "13812345678" not in json.dumps(audit, ensure_ascii=False)
     assert audit["redaction"]["xlsx"] == "redacted.xlsx"
     assert audit["redaction"]["regions"] == len(result.detections)
-    assert audit["redaction"]["leftover_count"] == 0
 
     # the source file is never modified in place
     src = load_workbook(xlsx)

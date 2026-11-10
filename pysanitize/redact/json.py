@@ -32,7 +32,7 @@ from bisect import bisect_right
 from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec
 from pysanitize.parser.json import format_path, render_scalar
-from pysanitize.redact._grams import gram_candidates, gram_index
+from pysanitize.redact._grams import ValueMatcher
 from pysanitize.utils import get_logger
 
 logger = get_logger()
@@ -163,25 +163,20 @@ def verify_redaction_json(out_path: str | Path, values: list[str]) -> list[tuple
     ``(value, json-path of first occurrence)`` pairs deduped by value; the
     caller logs them loudly but never fails the run on them.
 
-    Candidate values per leaf come from the shared n-gram prefilter
-    (:mod:`pysanitize.redact._grams`) — checking every value against every
-    leaf is quadratic and dominated large documents (36k values × 72k
-    leaves ≈ minutes).
+    Matching uses the shared positional prefilter
+    (:class:`pysanitize.redact._grams.ValueMatcher`) — candidate buckets on
+    shared prefix grams (ID region codes) held thousands of values and made
+    per-leaf matching quadratic on text-heavy documents.
     """
     wanted = {v for v in values if v}
     if not wanted:
         return []
-    grams2, grams4, short = gram_index(sorted(wanted))
+    matcher = ValueMatcher(wanted)
     data = json.loads(Path(out_path).read_text(encoding="utf-8-sig"))
     found: dict[str, str] = {}
 
     def check(text: str, where: str) -> None:
-        for v in short:
-            if v not in found and v in text:
-                found[v] = where
-        for v in gram_candidates(text, grams2, grams4):
-            if v not in found and v in text:
-                found[v] = where
+        matcher.scan(text, where, found)
 
     def walk(node, path: tuple) -> None:
         if isinstance(node, dict):

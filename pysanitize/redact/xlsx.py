@@ -38,7 +38,7 @@ from pathlib import Path
 
 from pysanitize.detector.base import Detection
 from pysanitize.detector.specs import MaskSpec
-from pysanitize.redact._grams import gram_candidates, gram_index
+from pysanitize.redact._grams import ValueMatcher
 from pysanitize.utils import get_logger
 
 logger = get_logger()
@@ -212,12 +212,13 @@ def verify_redaction_xlsx(out_path: str | Path, values: list[str]) -> list[tuple
     Returns ``(value, zip member)`` pairs deduped by value; the caller logs
     them loudly but never fails the run on them.
 
-    Word-only values are matched per ``\\w+`` token with the shared n-gram
-    prefilter: such a value can only ever sit inside one maximal word run, so
-    token-level substring checks are exact — and scanning every value against
-    every member blob is quadratic (63k values × megabyte blobs ≈ minutes).
-    Values containing non-word characters fall back to the direct blob grep
-    (they could straddle token boundaries).
+    Word-only values are matched per ``\\w+`` token with the shared positional
+    prefilter (:class:`pysanitize.redact._grams.ValueMatcher`): such a value
+    can only ever sit inside one maximal word run, so token-level checks are
+    exact — and scanning every value against every member blob is quadratic
+    (63k values × megabyte blobs ≈ minutes). Values containing non-word
+    characters fall back to the direct blob grep (they could straddle token
+    boundaries).
     """
     import html
     import re
@@ -227,7 +228,7 @@ def verify_redaction_xlsx(out_path: str | Path, values: list[str]) -> list[tuple
         return []
     wordy = {v for v in wanted if _WORDY_RE.fullmatch(v)}
     direct = wanted - wordy
-    grams2, grams4, short = gram_index(sorted(wordy))
+    matcher = ValueMatcher(wordy)
     found: dict[str, str] = {}
     with zipfile.ZipFile(out_path) as zf:
         for name in zf.namelist():
@@ -240,14 +241,9 @@ def verify_redaction_xlsx(out_path: str | Path, values: list[str]) -> list[tuple
             if not wordy:
                 continue
             for tok in re.findall(r"\w+", blob):
-                for v in gram_candidates(tok, grams2, grams4):
-                    if v not in found and v in tok:
-                        found[v] = name
-                        if len(found) == len(wanted):
-                            return sorted(found.items())
-            for v in short:
-                if v not in found and v in blob:
-                    found[v] = name
+                matcher.scan(tok, name, found)
+            if len(found) == len(wanted):
+                return sorted(found.items())
     return sorted(found.items())
 
 
@@ -263,26 +259,22 @@ def _scrub_comments_and_formulas(wb, values: list[str], placeholder: str) -> tup
     string cells are NOT scrubbed this way: they sit on the detection surface,
     so misses there are the detector's (and verify's) to report.
 
-    Candidate values per text come from the shared n-gram prefilter — a
-    formula-heavy workbook would otherwise multiply every formula by every
-    value. Candidates are replaced longest-first: disjoint values make the
-    order irrelevant, and nesting (张三 inside 张三丰, both detected) masks
-    the longer one — deterministic, unlike iterating detection order.
+    Candidate values per text come from the shared positional prefilter
+    (:class:`pysanitize.redact._grams.ValueMatcher`) — a formula-heavy
+    workbook would otherwise multiply every formula by every value.
+    Candidates are replaced longest-first: disjoint values make the order
+    irrelevant, and nesting (张三 inside 张三丰, both detected) masks the
+    longer one — deterministic, unlike iterating detection order.
     """
     comments = formulas = 0
     if not values:
         return 0, 0
-    grams2, grams4, short = gram_index(sorted(set(values)))
+    matcher = ValueMatcher(set(values))
 
     def _clean(text: str) -> str:
         clean = text
-        for v in short:
-            if v in clean:
-                clean = clean.replace(v, placeholder)
-        cands = sorted(gram_candidates(text, grams2, grams4), key=lambda v: (-len(v), v))
-        for v in cands:
-            if v in clean:
-                clean = clean.replace(v, placeholder)
+        for v in sorted(matcher.matches(text), key=lambda v: (-len(v), v)):
+            clean = clean.replace(v, placeholder)
         return clean
 
     for ws in wb.worksheets:

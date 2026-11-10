@@ -241,17 +241,6 @@ def _run_sanitize(args: argparse.Namespace) -> int:
         print(f"  Redacted XLSX: {result.redacted_xlsx}")
     if result.redacted_json:
         print(f"  Redacted JSON: {result.redacted_json}")
-    if result.redaction_leftovers:
-        pages = ",".join(str(p) for p in sorted({str(p) for _, p in result.redaction_leftovers}))
-        artifact = (
-            result.redacted_json.name
-            if result.redacted_json
-            else (result.redacted_xlsx.name if result.redacted_xlsx else "redacted.pdf")
-        )
-        print(
-            f"  ⚠ {len(result.redaction_leftovers)} sensitive values still "
-            f"present in {artifact} ({pages})"
-        )
     print(f"  Audit report: {result.audit_path}")
     if result.sensitive_report_path:
         print(f"  Sensitive-value report: {result.sensitive_report_path}")

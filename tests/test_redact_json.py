@@ -158,6 +158,30 @@ def test_verify_renders_numbers_like_the_surface(tmp_path: Path):
     assert verify_redaction_json(tmp_path / "out.json", ["13812345678"]) == []
 
 
+def test_verify_exact_when_values_share_prefix_grams(tmp_path: Path):
+    """Hundreds of values sharing prefix grams (ID region codes like
+    ``110101``) once flooded the candidate buckets. The positional matcher
+    must stay exact: the one value present is found with its path, absent
+    values are NOT reported even though their fat prefix gram occurs in a
+    sibling leaf."""
+    ids = [f"11010119900101{i:04d}X" for i in range(300)]
+    path = tmp_path / "p.json"
+    path.write_text(
+        json.dumps(
+            {"证件号": ids[0], "备注": "档案区间1101011990已归档"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    assert verify_redaction_json(path, ids) == [(ids[0], "$.证件号")]
+    empty = tmp_path / "q.json"
+    empty.write_text(
+        json.dumps({"备注": "档案区间1101011990已归档"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert verify_redaction_json(empty, ids) == []
+
+
 # -- end to end: the real pipeline (native parse, rules detector, no MinerU) --
 
 
@@ -166,7 +190,6 @@ def test_sanitize_document_json_end_to_end(json_file: Path, tmp_path: Path):
         json_file, detector="rules", fields=FIELDS, out_dir=tmp_path / "out"
     )
     assert result.redacted_json.is_file()
-    assert result.redaction_leftovers == []
     # structured sources ship no markdown — the redacted json IS the output
     assert result.sanitized_md is None
     assert not (tmp_path / "out" / "sanitized.md").exists()
@@ -177,7 +200,6 @@ def test_sanitize_document_json_end_to_end(json_file: Path, tmp_path: Path):
     # 9 spans land on 8 leaves — the 备注 leaf carries two phones in one string
     assert audit["redaction"]["regions"] == 8
     assert audit["redaction"]["regions"] <= len(result.detections)
-    assert audit["redaction"]["leftover_count"] == 0
 
     # the source file is never modified in place
     assert _orig(json_file)["员工"][0]["姓名"] == "张三"

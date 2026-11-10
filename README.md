@@ -28,7 +28,7 @@ PySanitize desensitizes sensitive information in **PDF / DOCX / Excel / JSON / s
 | 🔍 **Rules + LLM dual engine** | regex + dictionary heuristics (offline-ready); the LLM only *locates*, never rewrites, with verbatim re-match against hallucination |
 | 🖼️ **Image masking** | `face` / any YOLO class (detection models) **and** text-driven — bare `--image-text` mosaics all printed text, or a field list mosaics only matching fields (e.g. a company name on a seal) → mosaic |
 | 📄 **PDF redaction** | `--redact-pdf` also yields a layout-preserving `redacted.pdf` — sensitive glyphs truly *deleted*, mosaic on top, table borders intact |
-| 📊 **Excel & JSON redaction** | xlsx / json sources yield `redacted.xlsx` / `redacted.json` directly — values replaced **at the source** (no markdown, MinerU bypassed), comments/formula literals/sheet names/chart caches/docProps scrubbed, byte-level verification; recovery is offset-exact even when one cell holds several masked values |
+| 📊 **Excel & JSON redaction** | xlsx / json sources yield `redacted.xlsx` / `redacted.json` directly — values replaced **at the source** (no markdown, MinerU bypassed), comments/formula literals/sheet names/chart caches/docProps scrubbed; recovery is offset-exact even when one cell holds several masked values |
 | 🔁 **Reversible masking** | `--recoverable` records each value's ciphertext in `audit.json`; `pysanitize --recover` restores the original with the passphrase — the sanitized document itself looks like any normal run |
 | 🔌 **Switchable providers** | `--provider openai \| claude \| openrouter`, pick a provider section per model yaml |
 | 📊 **Audit-friendly** | public summary has no raw values; the raw-value report is only written with `--audit` |
@@ -244,7 +244,6 @@ With `--redact-pdf`, the pipeline additionally writes `redacted.pdf` next to `sa
 - Coordinates come from MinerU's `middle.json` per-line bboxes; in-line hits are placed by proportional char width (CJK is effectively monospaced)
 - **Tables**: middle 3.x exposes no cell coordinates, so a hit in a table redacts the whole table bbox — conservative over-redaction, safe by design
 - **Images**: regions of images that were *actually* mosaiced are stamped back, so the PDF page matches `images_masked/`; unmasked images stay untouched
-- Scanned pages (no text layer) are naturally skipped by verification, which downgrades any leftover to a warning, never a failure
 - Opt-in: pass `--redact-pdf`, or set `output.redact_pdf: true` in `config/pipeline.yaml` to make it the default; office inputs never produce one
 
 ### Why PyMuPDF (AGPL)
@@ -260,20 +259,20 @@ xlsx sources **always** get a `redacted.xlsx` (and no `sanitized.md` — the red
 - **Numbers & dates render as displayed**: a number-typed phone `13800138000` or a date `2024-03-01` is detected on its rendered text; a masked cell becomes text — the inherent cost of redaction
 - **Formulas**: a cell whose displayed value is sensitive has its formula replaced by the mask; every other formula survives, with `fullCalcOnLoad` forcing recalculation on open
 - **Workbook-wide scrubbing**: docProps (creator/title/…), comments / sheet names / formula literals *echoing a detected value*, and chart series caches (strCache/numCache — Excel rebuilds them from the references) are all cleaned
-- **Byte-level verification**: after writing, every text member of the zip (sheets, shared strings, charts, comments, docProps, …) is searched for every detection value — including their `&#NNNNN;` character-reference form — and leftovers are reported loudly in `redaction_leftovers`, never silently
+- **No post-write verification**: the redacted workbook is not re-checked automatically; `verify_redaction_xlsx()` stays available as a byte-level manual audit tool (greps every text member of the zip, `&#NNNNN;` character-reference forms included)
 - **Exact recovery**: `--recoverable` records each span's cell coordinates **and the masked value's exact position inside the cell**; `--recover` splices by that recorded position, so a cell holding several look-alike placeholders (two masked names both `***`, or a literal `***` in the text) restores exactly — and whole-cell numbers/dates come back **with their original python type** — stronger than the PDF's best-effort restore
 
-Known edges (P2): comments are not independently detected (only scrubbed when echoing an already-detected value — a sensitive value that appears *only* in a comment is invisible; see `scripts/gen_demo_roster.py` for a demo); embedded images inside xlsx pass through with a warning; leftover pivot caches are reported by verification; openpyxl round-trips re-serialize some exotic features lossily — a known cost.
+Known edges (P2): comments are not independently detected (only scrubbed when echoing an already-detected value — a sensitive value that appears *only* in a comment is invisible; see `scripts/gen_demo_roster.py` for a demo); embedded images inside xlsx pass through with a warning; pivot caches are not checked (verification was removed); openpyxl round-trips re-serialize some exotic features lossily — a known cost.
 
 ## 📦 JSON redaction (`redacted.json`)
 
 json sources **always** get a `redacted.json` (no `sanitized.md`, MinerU never invoked). Unlike a document, JSON has no page to preserve — the redacted file **is** the output, so it must stay a valid, faithful JSON document:
 
 - **Leaf provenance**: a native producer walks the parsed tree; every string leaf becomes one line of detection surface carrying its traversal path (`$.员工[0].备注`) — detection runs on exactly the values that get written back, the same by-construction guarantee as xlsx
-- **Structure untouched**: key order, nesting, untouched leaves, even indentation follow the source (2-space stays 2-space, minified stays minified); keys are schema, not data — a sensitive value echoed in a *key* is reported by verification, never rewritten
+- **Structure untouched**: key order, nesting, untouched leaves, even indentation follow the source (2-space stays 2-space, minified stays minified); keys are schema, not data — they are never rewritten, whatever they contain
 - **Numbers & bools on the surface**: a number-typed phone `13812345678` or an integral float `5.0` is detected on its rendered text (`5`, never `5.0`); a masked numeric leaf becomes a string (JSON has no masked number), and recovery restores the original type
 - **One cell, several values**: a string holding two phones (or a planted literal `***` beside two masked names) is one leaf with several replacements — each placeholder's exact position in the final value is computed, not searched, so recovery splices by position and can never cross-restore look-alikes
-- **Data-level verification**: the output is re-loaded and walked — string leaves, rendered numbers/bools, and keys — reporting any surviving value with its json path
+- **No post-write verification**: the redacted json is not re-checked automatically; `verify_redaction_json()` stays available as a data-level manual audit tool (walks string leaves, rendered numbers/bools and keys, reporting survivors with their json path)
 - **Exact recovery**: `--recoverable` records each span's leaf path + type tag; `--recover` restores per leaf with types back (`13812345678` a number again). One documented edge: a rewritten value loses its embedded newlines (rendered flattened), exactly like a rewritten xlsx cell — untouched multi-line values keep theirs
 
 ## 🔁 Recoverable masking (`--recoverable` / `--recover`)
@@ -323,13 +322,13 @@ uv run pysanitize contract.pdf --detector hybrid --provider openrouter --model d
 
 ## 🔒 Security boundaries & known limits
 
-- **Scans** (no text layer): the OCR'd Markdown is desensitized; `redacted.pdf` verification naturally finds nothing to remove there
+- **Scans** (no text layer): the OCR'd Markdown is desensitized; `redacted.pdf` has nothing to remove there in the first place
 - **Tables redact whole-table in the PDF** (cell coordinates don't exist in middle 3.x); the `sanitized.md` output is still cell-precise
 - **Person / company names** are dictionary heuristics with limited precision; use `hybrid` for sensitive material
 - **LLM hallucination**: the verbatim re-match gate means misses are far likelier than false positives
 - **Image masking is off by default**: you must pass `--image-classes` and/or `--image-text`; bare `--image-text` mosaics **all** printed text in an image
 - **No seal / handwriting / profile-face detection**: text on seals rides OCR (lines under `image.ocr.confidence` are dropped); graphic signatures, logos and non-frontal faces have no dedicated detector — custom YOLO weights can add targets, but expect misses
-- **No image-masking verification**: unlike `redacted.pdf` (which is re-read for leftover values), masked images are not re-OCR'd to prove the text is gone — a detection miss stays invisible
+- **No image-masking verification**: masked images are not re-OCR'd to prove the text is gone — a detection miss stays invisible
 - **Image OCR language defaults to `ch`** (Chinese + Latin); other languages need `image.ocr.lang` in `config/pipeline.yaml`
 - **Long-number false positives** (18-digit figures in finance tables): checksums on by default + `bank_account` off by default
 - **PyMuPDF is AGPL-licensed** — used only for `redacted.pdf`; fine for internal tooling, review before closed-source distribution
@@ -347,7 +346,7 @@ pysanitize/
 ├── parser/     MinerU wrapper (middle.json projection + v2 fallback) + native xlsx/json producers + ParsedDocument (line geometry / image pairing / offset mapping)
 ├── detector/   rules / llm / registry (overlap resolution) / image (face / YOLO classes / OCR text & field-driven)
 ├── masker/     text (offset masking) / image (mosaic)
-├── redact/     offsets → page rects (PDF) / cell coords (xlsx) / leaf paths (json), redaction + verification
+├── redact/     offsets → page rects (PDF) / cell coords (xlsx) / leaf paths (json), redaction
 ├── recover/    reversible tokens (AES-GCM + scrypt) and pipeline-independent restoration
 ├── pipeline.py sanitize_document() orchestration (the only public entry)
 ├── cli.py      argparse CLI
