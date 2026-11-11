@@ -654,15 +654,19 @@ def test_cli_recover_dispatch(monkeypatch, capsys):
 
     seen = {}
 
-    def fake_recover(file, *, audit_path=None, passphrase=None, out_path=None):
+    def fake_recover(file, *, audit_path=None, passphrase=None, out_path=None,
+                     newline_source=None):
         seen["file"], seen["audit"], seen["key"] = file, audit_path, passphrase
+        seen["newline_source"] = newline_source
         return RecoverResult(Path(file).parent / "recovered.md", 3, 1, "markdown")
 
     monkeypatch.setattr(pysanitize.recover, "recover_file", fake_recover)
     with pytest.raises(SystemExit) as e:
-        main(["out/sanitized.md", "--recover", "--recover-key", "k"])
+        main(["out/sanitized.md", "--recover", "--recover-key", "k",
+              "--restore-newlines-from", "src.json"])
     assert e.value.code == 0
-    assert seen == {"file": "out/sanitized.md", "audit": None, "key": "k"}
+    assert seen == {"file": "out/sanitized.md", "audit": None, "key": "k",
+                    "newline_source": "src.json"}
     out = capsys.readouterr().out
     assert "Recovered document" in out and "unresolved spans 1" in out
 

@@ -33,7 +33,7 @@ def json_file(tmp_path: Path) -> Path:
                 "身份证号": "110101199003078515",
                 "银行卡号": "6222020200112345678",
                 "备注": "短信 13812345678 已发 13900001111",  # two hits, one string
-                "说明": "第一行\n第二行 13800001111",  # rewrite flattens the newline
+                "说明": "第一行\n第二行 13800001111",  # rewrite keeps the newline
                 "未涉密": "第一行\n第二行",  # untouched multi-line keeps its newline
             },
             {"姓名": "李四", "手机号": "13912345678"},
@@ -96,7 +96,7 @@ def test_redact_json_values_and_structure(json_file: Path):
     assert emp["身份证号"] == "1101**********8515"
     assert emp["银行卡号"] == "6222***********5678"
     assert emp["备注"] == "短信 138****5678 已发 139****1111"
-    assert emp["说明"] == "第一行 第二行 138****1111"  # rewritten → newline lost
+    assert emp["说明"] == "第一行\n第二行 138****1111"  # rewritten → newline kept
     assert emp["未涉密"] == "第一行\n第二行"  # untouched keeps its newline
     assert out["员工"][1]["姓名"] == "***"
     assert out["配置"] == {"等级": 5, "比例": 0.25, "开关": True, "空值": None}
@@ -268,11 +268,44 @@ def test_recoverable_round_trip_is_exact(json_file: Path, tmp_path: Path):
 
     data = json.loads(rec.output.read_text(encoding="utf-8"))
     expected = copy.deepcopy(_orig(json_file))
-    # the one documented loss: a rewritten value loses its newlines (rendered
-    # flattened), exactly like a rewritten xlsx cell — everything else is bit-exact
-    expected["员工"][0]["说明"] = expected["员工"][0]["说明"].replace("\n", " ")
+    # byte-exact: a rewritten value keeps its embedded newlines (the detection
+    # surface flattens them 1:1, and the splice runs over the raw leaf)
     assert data == expected
     assert isinstance(data["员工"][0]["手机号"], int)  # type restored, not "138…"
+
+
+def test_recover_restores_newlines_from_source_for_pre_fix_artifacts(
+    json_file: Path, tmp_path: Path
+):
+    """Artifacts sanitized before the newline fix lost them at redact time —
+    the audit never recorded them. With the ORIGINAL source, recovery can put
+    them back exactly: after values are restored the leaf equals the
+    flattened source, which pins every newline position."""
+    result = sanitize_document(
+        json_file,
+        detector="rules",
+        fields=FIELDS,
+        recoverable=True,
+        recover_key="pw",
+        out_dir=tmp_path / "out",
+    )
+    # Simulate a pre-fix redacted.json: it wrote the detection surface back.
+    red = json.loads(result.redacted_json.read_text(encoding="utf-8"))
+    red["员工"][0]["说明"] = red["员工"][0]["说明"].replace("\n", " ")
+    result.redacted_json.write_text(
+        json.dumps(red, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    # Without the source the line break is simply gone (as before).
+    plain = recover_file(result.redacted_json, passphrase="pw")
+    assert json.loads(plain.output.read_text(encoding="utf-8"))["员工"][0]["说明"] == (
+        "第一行 第二行 13800001111"
+    )
+
+    # With it, the recovered leaf is the original text — values AND newline.
+    fixed = recover_file(result.redacted_json, passphrase="pw", newline_source=json_file)
+    assert fixed.unresolved == 0
+    assert json.loads(fixed.output.read_text(encoding="utf-8")) == _orig(json_file)
 
 
 def test_multi_span_string_restores_by_offset(tmp_path: Path):

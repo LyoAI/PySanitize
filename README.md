@@ -273,7 +273,7 @@ json sources **always** get a `redacted.json` (no `sanitized.md`, MinerU never i
 - **Numbers & bools on the surface**: a number-typed phone `13812345678` or an integral float `5.0` is detected on its rendered text (`5`, never `5.0`); a masked numeric leaf becomes a string (JSON has no masked number), and recovery restores the original type
 - **One cell, several values**: a string holding two phones (or a planted literal `***` beside two masked names) is one leaf with several replacements — each placeholder's exact position in the final value is computed, not searched, so recovery splices by position and can never cross-restore look-alikes
 - **No post-write verification**: the redacted json is not re-checked automatically; `verify_redaction_json()` stays available as a data-level manual audit tool (walks string leaves, rendered numbers/bools and keys, reporting survivors with their json path)
-- **Exact recovery**: `--recoverable` records each span's leaf path + type tag; `--recover` restores per leaf with types back (`13812345678` a number again). One documented edge: a rewritten value loses its embedded newlines (rendered flattened), exactly like a rewritten xlsx cell — untouched multi-line values keep theirs
+- **Exact recovery**: `--recoverable` records each span's leaf path + type tag; `--recover` restores per leaf with types back (`13812345678` a number again), embedded newlines included — rewritten leaves are spliced over the raw value, so a multi-line leaf comes back byte-identically
 
 ## 🔁 Recoverable masking (`--recoverable` / `--recover`)
 
@@ -290,7 +290,14 @@ uv run pysanitize output/sample/sanitized.md --recover
 uv run pysanitize output/sample/redacted.pdf --recover
 uv run pysanitize output/sample/redacted.xlsx --recover
 uv run pysanitize output/sample/redacted.pdf --recover --recover-key s3cret   # explicit override still works
+
+# redacted.json / redacted.xlsx produced by a build that flattened newlines in
+# rewritten leaves/cells?  Recovery alone can put them back — the audit never
+# recorded them, but the ORIGINAL source pins their positions:
+uv run pysanitize output/sample/redacted.json --recover --restore-newlines-from sample.json
 ```
+
+`--restore-newlines-from` is opportunistic and never guesses: after the values are restored, a leaf/cell that equals the source's flattened form (newlines → spaces, 1:1) is replaced by the source text, so line breaks come back exactly; a leaf with an unresolved placeholder, or edited after sanitizing, does not match and is left as-is.
 
 However the passphrase is provided, the **effective key is always written to `output/<doc>/.recover.key` (0600)** at sanitize time — whether it came from `--recover-key`, `$PYSANITIZE_RECOVER_KEY`, or a fresh auto-generated draw — so `.recover.key` is the single source of truth and recovery only ever reads that file.
 

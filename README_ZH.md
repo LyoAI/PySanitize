@@ -269,7 +269,7 @@ json 输入**始终**产出 `redacted.json`（不产 `sanitized.md`，绝不调�
 - **数字与布尔上检测面**：数字型手机号 `13812345678`、整值浮点 `5.0` 按渲染文本检测（是 `5` 不是 `5.0`）；被掩码的数字叶子变成字符串（JSON 没有掩码数字），还原时恢复原类型
 - **一个值里多个敏感串**：一条字符串里两个手机号（或正文里另有一个字面 `***`、旁边还有两个掩码名）是一个叶子上的多次替换——每个占位符在最终值里的精确位置是**算出来的不是搜出来的**，还原按位置拼接，绝无串位可能
 - **写后不做自动校验**：`verify_redaction_json()` 保留为手动审计工具（重新加载并遍历字符串叶子、渲染后的数字/布尔、键名，残留值连同 json 路径报告），按需抽查
-- **恢复是精确的**：`--recoverable` 记录每个 span 的叶子路径 + 类型标签，`--recover` 逐叶子还原并恢复类型（`13812345678` 回到数字）。唯一已知边界：被改写的值会丢失内嵌换行（按展平渲染），与改写的 xlsx 单元格一致——未触碰的多行值不受影响
+- **恢复是精确的**：`--recoverable` 记录每个 span 的叶子路径 + 类型标签，`--recover` 逐叶子还原并恢复类型（`13812345678` 回到数字），内嵌换行也一样——改写是在源叶子上拼接的，多行叶子可逐字节还原。**旧版本**脱敏过的产物（改写叶子丢了换行）无需重新脱敏，恢复时加 `--restore-newlines-from <原始文件>` 即可补回（见下文）
 
 ## 🔁 可恢复脱敏（`--recoverable` / `--recover`）
 
@@ -286,7 +286,13 @@ uv run pysanitize output/样例/sanitized.md --recover
 uv run pysanitize output/样例/redacted.pdf --recover
 uv run pysanitize output/样例/redacted.xlsx --recover
 uv run pysanitize output/样例/redacted.pdf --recover --recover-key s3cret   # 显式覆盖仍可用
+
+# redacted.json / redacted.xlsx 是旧版本脱敏的（改写叶子里的换行被压平了）？
+# 只重新恢复就能补回来——audit 里没有记录换行，但原始文件能唯一确定它们的位置：
+uv run pysanitize output/样例/redacted.json --recover --restore-newlines-from 样例.json
 ```
+
+`--restore-newlines-from` 只做精确修复、绝不猜测：值全部还原后，叶子/单元格应恰好等于原始文本的压平形式（换行→空格，1:1 等长），此时直接取源文本，换行逐字节回来；存在未解析占位符、或脱敏后又被编辑过的叶子对不上，保持原样。批量恢复的对应参数是 `scripts/batch_recover.py ... --source-root <当初脱敏的目录>`。
 
 无论口令当初以哪种方式传入，**脱敏时都会把生效密钥写入 `output/<文档>/.recover.key`（0600）**——不管来自 `--recover-key`、`$PYSANITIZE_RECOVER_KEY` 还是自动生成——于是 `.recover.key` 成为唯一事实来源，还原只需读它。
 

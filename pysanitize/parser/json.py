@@ -82,6 +82,10 @@ def render_scalar(value) -> tuple[str, str] | None:
     the same thing on both sides of the round-trip (an integral float renders
     ``138`` on the surface but serializes ``138.0`` — rendering is the
     contract, ``str()`` is not).
+
+    Newlines flatten to spaces so one leaf is one detection line. The
+    substitution is 1:1 in length, and the redactor relies on that: it splices
+    the same offsets into the *raw* leaf, so embedded newlines survive.
     """
     if isinstance(value, str):
         text = value.replace("\r", " ").replace("\n", " ")

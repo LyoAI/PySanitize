@@ -128,6 +128,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--recover-audit", dest="recover_audit",
         help="audit.json to recover from (default: audit.json next to <file>)",
     )
+    parser.add_argument(
+        "--restore-newlines-from", dest="restore_newlines_from", metavar="SOURCE",
+        help=(
+            "with --recover on a redacted.json / redacted.xlsx: the ORIGINAL "
+            "source file, used to put back line breaks that a pre-fix "
+            "sanitize flattened inside rewritten leaves/cells (only leaves "
+            "that restore exactly are touched)"
+        ),
+    )
     parser.add_argument("--redact-pdf", dest="redact_pdf", action="store_true",
                         help="also write a layout-preserving redacted.pdf for PDF inputs (off by default)")
     parser.set_defaults(redact_pdf=None)
@@ -254,6 +263,7 @@ def _run_recover(args: argparse.Namespace) -> int:
         args.file,
         audit_path=args.recover_audit,
         passphrase=args.recover_key,
+        newline_source=args.restore_newlines_from,
     )
     print(f"Recovered document: {result.output}")
     print(

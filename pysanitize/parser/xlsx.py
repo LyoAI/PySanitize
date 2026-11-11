@@ -11,7 +11,9 @@ offset→cell mapping is exact by construction, never matched after the fact.
 
 Rendered surface (what detectors see, and what a masked cell becomes):
 
-- str: verbatim, newlines flattened to spaces (a rewritten cell loses them)
+- str: cell text on one line; newlines flatten to spaces for detection (1:1
+  in length — the redactor splices the same offsets into the raw cell, so a
+  rewritten cell keeps its newlines)
 - int / integral float: ``13800138000`` (never ``13800138000.0``)
 - other float: shortest python repr
 - datetime/date/time: ISO-ish (``2024-03-01``, ``2024-03-01 09:30:00``);

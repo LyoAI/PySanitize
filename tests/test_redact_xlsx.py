@@ -207,6 +207,29 @@ def test_sanitize_document_xlsx_end_to_end(xlsx: Path, tmp_path: Path):
     assert src["张三工资表"]["A2"].value == "张三"
 
 
+def test_rewritten_cell_keeps_embedded_newlines(tmp_path: Path):
+    """A rewritten multi-line cell must not be flattened.
+
+    The detection surface flattens ``\\n`` to a space so a table row stays one
+    line, but that substitution is length-preserving and the splice runs over
+    the cell's raw string — untouched text (and its newlines) survives.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["备注"])
+    ws.append(["第一行\n第二行 电话 13812345678"])
+    src = tmp_path / "m.xlsx"
+    wb.save(src)
+
+    doc = parse_document(src)
+    detections = _detect(doc)
+    edits = resolve_cells(doc, detections, _mask_map())
+    out = tmp_path / "out.xlsx"
+    redact_xlsx(src, edits, out, values=[d.value for d in detections])
+
+    assert load_workbook(out).active["A2"].value == "第一行\n第二行 电话 138****5678"
+
+
 def test_recoverable_round_trip_is_exact(xlsx: Path, tmp_path: Path):
     result = sanitize_document(
         xlsx,
@@ -237,6 +260,34 @@ def test_recoverable_round_trip_is_exact(xlsx: Path, tmp_path: Path):
     assert emp["C2"].value == "110101199003078515"
     assert emp["D2"].value == dt.datetime(2024, 3, 1)
     assert sal["A2"].value == "张三" and sal["B2"].value == 25000.5
+
+
+def test_recover_restores_newlines_from_source_for_pre_fix_cells(tmp_path: Path):
+    """Same narrative as the json twin: a pre-fix redacted.xlsx flattened the
+    rewritten cell; recovery alone puts the line break back when handed the
+    original workbook."""
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["备注"])
+    ws.append(["第一行\n第二行 电话 13812345678"])
+    src = tmp_path / "m.xlsx"
+    wb.save(src)
+
+    result = sanitize_document(
+        src, detector="rules", recoverable=True, recover_key="pw", out_dir=tmp_path / "out"
+    )
+    # Simulate the pre-fix artifact (the detection surface was written back).
+    rb = load_workbook(result.redacted_xlsx)
+    rb.active["A2"] = rb.active["A2"].value.replace("\n", " ")
+    rb.save(result.redacted_xlsx)
+
+    plain = recover_file(result.redacted_xlsx, passphrase="pw")
+    assert load_workbook(plain.output).active["A2"].value == "第一行 第二行 电话 13812345678"
+
+    fixed = recover_file(
+        result.redacted_xlsx, passphrase="pw", newline_source=src
+    )
+    assert load_workbook(fixed.output).active["A2"].value == "第一行\n第二行 电话 13812345678"
 
 
 def test_multi_span_cell_restores_by_offset(xlsx: Path, tmp_path: Path):

@@ -80,8 +80,18 @@ def recover_file(
     audit_path: str | Path | None = None,
     passphrase: str | None = None,
     out_path: str | Path | None = None,
+    newline_source: str | Path | None = None,
 ) -> RecoverResult:
-    """Recover one sanitized artifact. Dispatches on the file suffix."""
+    """Recover one sanitized artifact. Dispatches on the file suffix.
+
+    ``newline_source`` is the original ``.json`` / ``.xlsx`` file, for
+    artifacts sanitized by a version that flattened newlines in rewritten
+    leaves/cells. The line breaks themselves were never recorded in the
+    audit, so they cannot be recovered from the artifact alone; with the
+    source in hand, each restored leaf/cell is compared against the source's
+    flattened form and, when identical, replaced by the source text — exact,
+    and purely a recovery-time change (no re-sanitizing).
+    """
     input_path = Path(input_path)
     if not input_path.is_file():
         raise FileNotFoundError(f"no such document: {input_path}")
@@ -90,12 +100,17 @@ def recover_file(
     secret, _ = obtain_passphrase(passphrase, keyfile, allow_generate=False)
     cipher = cipher_from_audit(audit, secret)
 
-    if input_path.suffix.lower() == ".pdf":
+    suffix = input_path.suffix.lower()
+    if suffix == ".pdf":
+        if newline_source is not None:
+            raise ValueError("restoring line breaks applies to redacted.json / redacted.xlsx")
         return _recover_pdf(input_path, cipher, audit, out_path)
-    if input_path.suffix.lower() == ".xlsx":
-        return _recover_xlsx(input_path, cipher, audit, out_path)
-    if input_path.suffix.lower() == ".json":
-        return _recover_json(input_path, cipher, audit, out_path)
+    if suffix == ".xlsx":
+        return _recover_xlsx(input_path, cipher, audit, out_path, newline_source=newline_source)
+    if suffix == ".json":
+        return _recover_json(input_path, cipher, audit, out_path, newline_source=newline_source)
+    if newline_source is not None:
+        raise ValueError("restoring line breaks applies to redacted.json / redacted.xlsx")
     return _recover_markdown(input_path, cipher, audit, out_path)
 
 
@@ -103,6 +118,34 @@ def _target_for(input_path: Path, out_path) -> Path:
     if out_path:
         return Path(out_path)
     return input_path.with_name(f"{input_path.stem}_recovered{input_path.suffix}")
+
+
+def _flatten_text(value: str) -> str:
+    """The detection-surface rendering of a string (newlines → spaces, 1:1)."""
+    return value.replace("\r", " ").replace("\n", " ")
+
+
+def _leaf_at(data, path):
+    """Read the value at a leaf path recorded by the audit."""
+    node = data
+    for k in path:
+        node = node[k]
+    return node
+
+
+def _cell_text_with_newlines(orig_wb, idx: int, row: int, col: int, text: str) -> str:
+    """Swap a restored cell's flattened text for the source text when exact.
+
+    Old redaction wrote the detection surface back, so a rewritten cell lost
+    its line breaks. Recovery has already brought every value back, making the
+    cell equal to the *flattened* source — which pins the newline positions
+    exactly. Anything that does not match (an unresolved placeholder, a cell
+    edited after sanitizing, a number) is left untouched.
+    """
+    if orig_wb is None or not 0 <= idx < len(orig_wb.worksheets):
+        return text
+    raw = orig_wb.worksheets[idx].cell(row=row, column=col).value
+    return raw if isinstance(raw, str) and _flatten_text(raw) == text else text
 
 
 def _recover_markdown(md_path: Path, cipher: TokenCipher, audit: dict, out_path) -> RecoverResult:
@@ -171,7 +214,10 @@ def _recover_pdf(pdf_path: Path, cipher: TokenCipher, audit: dict, out_path) -> 
     return RecoverResult(target, restored, unresolved, "pdf")
 
 
-def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -> RecoverResult:
+def _recover_xlsx(
+    xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path,
+    *, newline_source: str | Path | None = None,
+) -> RecoverResult:
     """Restore original cell values in a ``redacted.xlsx`` — exact, per cell.
 
     Each recoverable span records the cells its detection touched (sheet index
@@ -190,6 +236,9 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
     from openpyxl import load_workbook
 
     wb = load_workbook(xlsx_path, data_only=False)
+    orig_wb = None
+    if newline_source is not None:
+        orig_wb = load_workbook(Path(newline_source), data_only=False)
     spans = audit_spans(audit)
     placed = [s for s in spans if s.get("cells")]
     # Cells with a single span that covered the whole cell: restore the type.
@@ -222,6 +271,7 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
                for ms, me, _, masked, _ in items):
             continue  # placeholder moved — the file was edited after sanitizing
         text = apply_repls(text, items)
+        text = _cell_text_with_newlines(orig_wb, idx, row, col, text)
         ws.cell(row=row, column=col).value = text
         ok_spans.update(i for _, _, _, _, i in items)
 
@@ -244,7 +294,10 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
             current = ws.cell(row=row, column=col).value
             text = "" if current is None else str(current)
             if masked and masked in text:
-                ws.cell(row=row, column=col).value = text.replace(masked, value, 1)
+                restored = text.replace(masked, value, 1)
+                ws.cell(row=row, column=col).value = _cell_text_with_newlines(
+                    orig_wb, idx, row, col, restored
+                )
                 ok_spans.add(i)
 
     # Type restore: one span, one cell, current value == decrypted value.
@@ -287,7 +340,10 @@ def _recover_xlsx(xlsx_path: Path, cipher: TokenCipher, audit: dict, out_path) -
     return RecoverResult(target, len(ok_spans), unresolved, "xlsx")
 
 
-def _recover_json(json_path: Path, cipher: TokenCipher, audit: dict, out_path) -> RecoverResult:
+def _recover_json(
+    json_path: Path, cipher: TokenCipher, audit: dict, out_path,
+    *, newline_source: str | Path | None = None,
+) -> RecoverResult:
     """Restore original leaf values in a ``redacted.json`` — exact, by position.
 
     Each recoverable span records the leaf's traversal path plus where its
@@ -300,6 +356,10 @@ def _recover_json(json_path: Path, cipher: TokenCipher, audit: dict, out_path) -
     """
     raw = json_path.read_text(encoding="utf-8-sig")
     data = json.loads(raw)
+    orig = None
+    if newline_source is not None:
+        with Path(newline_source).open(encoding="utf-8-sig") as fh:
+            orig = json.load(fh)
     spans = audit_spans(audit)
     placed = [s for s in spans if s.get("json")]
     per_leaf: dict[tuple, list[tuple[int, int, str, str, int]]] = {}
@@ -330,6 +390,15 @@ def _recover_json(json_path: Path, cipher: TokenCipher, audit: dict, out_path) -
                for ms, me, _, masked, _ in items):
             continue  # placeholder moved — the file was edited after sanitizing
         text = apply_repls(node, items)
+        if orig is not None:
+            try:
+                source = _leaf_at(orig, path)
+            except (KeyError, IndexError, TypeError):
+                source = None
+            # Every value is back, so the leaf now equals the *flattened*
+            # source — the newline positions are pinned; take the source text.
+            if isinstance(source, str) and _flatten_text(source) == text:
+                text = source
         # Whole-leaf number/bool masks come back with their JSON type.
         if len(items) == 1:
             kind = placed[items[0][4]]["json"].get("kind", "str")

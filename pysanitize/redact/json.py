@@ -130,10 +130,13 @@ def redact_json(
 
     Structure and key order are preserved (``json.loads`` keeps insertion
     order; splicing never adds or removes elements). Each rewritten string
-    leaf is the source value with its masked spans spliced in — newlines
-    flatten to spaces the way a rewritten xlsx cell loses them; untouched
-    leaves keep theirs. Indent and trailing-newline follow the source (2
-    spaces when the source is single-line/minified → compact output).
+    leaf is the source value with its masked spans spliced in — spliced over
+    the *original* leaf, not over the detection surface: the parser flattens
+    ``\\r``/``\\n`` to spaces for detection (one leaf per line), but that
+    substitution is length-preserving, so the same offsets apply to the raw
+    value and its newlines survive redaction (and therefore recovery).
+    Indent and trailing-newline follow the source (2 spaces when the source
+    is single-line/minified → compact output).
     """
     src = Path(doc_path)
     # Stream both ways: a 99 MB export would otherwise be alive three times
@@ -144,7 +147,14 @@ def redact_json(
     with src.open(encoding="utf-8-sig") as fh:
         data = json.load(fh)
     for edit in edits:
-        text = apply_repls(edit.text, edit.repls)
+        # Splice over the source leaf, not ``edit.text``: the latter is the
+        # detection surface, where the parser replaced newlines with spaces.
+        # The rewrite is 1:1 in length, so ``repls`` offsets hold for both —
+        # using the raw value keeps untouched newlines intact. Non-string
+        # leaves (numbers/bools) are wholly replaced by the masked string.
+        raw = _get_leaf(data, edit.path)
+        on_surface = isinstance(raw, str) and raw.replace("\r", " ").replace("\n", " ") == edit.text
+        text = apply_repls(raw if on_surface else edit.text, edit.repls)
         _set_leaf(data, edit.path, text)
     with Path(out_path).open("w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=indent)
@@ -195,6 +205,14 @@ def verify_redaction_json(out_path: str | Path, values: list[str]) -> list[tuple
 
     walk(data, ())
     return sorted(found.items())
+
+
+def _get_leaf(data, path: tuple):
+    """Read the value at ``path`` — the exact inverse of :func:`_set_leaf`."""
+    node = data
+    for k in path:
+        node = node[k]
+    return node
 
 
 def _set_leaf(data, path: tuple, value) -> None:

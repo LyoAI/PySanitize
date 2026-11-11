@@ -176,9 +176,17 @@ def redact_xlsx(
 
     wb = load_workbook(Path(doc_path), data_only=False)
     for edit in edits:
-        text = apply_repls(edit.text, edit.repls)
         ws = wb.worksheets[edit.sheet_idx] if 0 <= edit.sheet_idx < len(wb.worksheets) else wb[edit.sheet]
-        ws.cell(row=edit.row, column=edit.col).value = text
+        cell = ws.cell(row=edit.row, column=edit.col)
+        # Splice over the cell's own string when it has one: ``edit.text`` is
+        # the detection surface, where newlines were flattened to spaces (1:1
+        # in length, so ``repls`` offsets hold for both). Writing the surface
+        # back destroyed embedded newlines in multi-line cells. Numbers,
+        # formulas and rich text keep the rendered string (wholly masked).
+        raw = cell.value
+        on_surface = isinstance(raw, str) and raw.replace("\n", " ").replace("\r", " ") == edit.text
+        text = apply_repls(raw if on_surface else edit.text, edit.repls)
+        cell.value = text
 
     values = [v for v in (values or []) if v]
     n_comments, n_formulas = _scrub_comments_and_formulas(wb, values, placeholder)

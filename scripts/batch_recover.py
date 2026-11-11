@@ -15,12 +15,20 @@ artifact never aborts the batch; already-recovered outputs are skipped unless
 run, and files with unresolved spans are flagged loudly (someone edited the
 sanitized artifact after the run).
 
+``--source-root`` points at the folder that was sanitized: the batch layout
+mirrors it (``output/<rel>/<stem>/redacted.json`` ← ``<root>/<rel>/<stem>.json``),
+so each redacted.json / redacted.xlsx is recovered together with the source
+file, putting back line breaks that a pre-fix sanitize flattened (see
+``recover_file(newline_source=...)``). A missing source just means that file
+recovers without them.
+
 Default writes ``<stem>_recovered<ext>`` beside each artifact; ``--out-dir``
 mirrors the tree into a separate root instead.
 
 Usage:
     uv run python scripts/batch_recover.py output
     uv run python scripts/batch_recover.py output --recover-key s3cret
+    uv run python scripts/batch_recover.py output --source-root upload_materials
     uv run python scripts/batch_recover.py output --out-dir recovered --force
 """
 
@@ -89,6 +97,37 @@ def target_for(artifact: Path, in_root: Path, out_root: Path | None) -> Path:
     return out_root / artifact.parent.relative_to(in_root) / name
 
 
+def source_for(artifact: Path, in_root: Path, source_root: Path) -> Path | None:
+    """The original document behind a ``redacted.json`` / ``redacted.xlsx``.
+
+    The batch mirrors the input tree (``output/a/report/redacted.json`` came
+    from ``upload_materials/a/report.json``), so the job directory names the
+    stem. A same-stem collision gets a suffix (``report-json/``), tried second
+    so a genuine ``report-json.json`` still wins. Only exact-source recovery
+    uses this; anything else is recovered as before.
+    """
+    ext = artifact.suffix.lower()
+    if artifact.name not in ("redacted.json", "redacted.xlsx"):
+        return None
+    job = artifact.parent
+    try:
+        rel_parent = job.parent.relative_to(in_root)
+    except ValueError:
+        return None
+    stems = [job.name]
+    if job.name.lower().endswith(f"-{ext.lstrip('.')}"):
+        stems.append(job.name[: -len(ext)])  # "report-json" → "report"
+    for stem in stems:
+        candidate = source_root / rel_parent / f"{stem}{ext}"
+        if candidate.is_file():
+            return candidate
+        # original suffix may differ in case (REPORT.XLSX)
+        for p in (source_root / rel_parent).glob(f"{stem}.*"):
+            if p.suffix.lower() == ext and p.is_file():
+                return p
+    return None
+
+
 # ---------------------------------------------------------------------- main
 
 
@@ -104,6 +143,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "(default: beside each artifact)")
     parser.add_argument("--recover-key", help="passphrase (else $PYSANITIZE_RECOVER_KEY, "
                         "else each job's .recover.key)")
+    parser.add_argument("--source-root", metavar="DIR",
+                        help="the folder that was sanitized: recover redacted.json / "
+                        "redacted.xlsx together with its source file, restoring line "
+                        "breaks a pre-fix sanitize flattened")
     parser.add_argument("--force", action="store_true",
                         help="re-recover files whose output already exists")
     return parser.parse_args(argv)
@@ -115,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(args.out_dir).resolve() if args.out_dir else None
     if not in_root.is_dir():
         print(f"error: not a folder: {in_root}", file=sys.stderr)
+        return 2
+    source_root = Path(args.source_root).resolve() if args.source_root else None
+    if source_root is not None and not source_root.is_dir():
+        print(f"error: not a folder: {source_root}", file=sys.stderr)
         return 2
 
     artifacts = collect_artifacts(in_root, out_root)
@@ -146,7 +193,11 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.monotonic()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)  # recover_file won't
-            result = recover_file(artifact, passphrase=args.recover_key, out_path=target)
+            newline_src = source_for(artifact, in_root, source_root) if source_root else None
+            result = recover_file(
+                artifact, passphrase=args.recover_key, out_path=target,
+                newline_source=newline_src,
+            )
         except Exception as exc:  # wrong key, corrupt artifact, missing extra …
             failed += 1
             records.append({"artifact": str(rel), "status": "failed", "error": str(exc)[:300]})
@@ -158,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             "artifact": str(rel), "output": str(result.output), "status": "recovered",
             "kind": result.kind, "restored": result.restored,
             "unresolved": result.unresolved, "duration_s": round(duration, 2),
+            **({"newline_source": str(newline_src)} if newline_src else {}),
         })
         mark = "" if result.unresolved == 0 else f"  ⚠ {result.unresolved} unresolved"
         if result.unresolved:
